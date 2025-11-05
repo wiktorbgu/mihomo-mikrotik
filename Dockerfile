@@ -60,7 +60,6 @@ ARG TARGETVARIANT
 
 COPY --from=build /tmp/build/ /
 
-ENV DISABLE_NFTABLES=1
 ENV CONFIG="default_config.yaml"
 ENV WORKDIR="/etc/mihomo"
 ENV HEALTH_CHECK_URL="https://www.gstatic.com/generate_204"
@@ -85,14 +84,16 @@ RUN case "$TARGETPLATFORM" in \
             apt clean -y && \
             rm -rf /var/cache/apt/archives /var/lib/apt/lists/* && \
             sed -i '1s|^#!/bin/sh|#!/bin/bash|' /entrypoint.sh;; \
-        linux/amd64 | linux/arm64 | linux/arm/v7) \
+        linux/arm/v7) \
             apk add --no-cache iptables iptables-legacy tzdata envsubst ca-certificates && \
             rm -vrf /var/cache/apk/* ;; \
+        linux/amd64 | linux/arm64) \
+            apk add --no-cache iptables iptables-legacy tzdata envsubst ca-certificates nftables && \
+            rm -vrf /var/cache/apk/* ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
-    esac
-
+    esac && \
     # IPv4
-RUN rm /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore && \
+    rm /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore && \
     ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables && \
     ln -s /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
     ln -s /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
