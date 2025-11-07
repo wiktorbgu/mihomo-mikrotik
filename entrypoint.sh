@@ -55,6 +55,8 @@ listeners:
 
 rules:
   - AND,((NETWORK,udp),(DST-PORT,443)),QUIC
+  - IN-NAME,tun-in,SELECTOR
+  - IN-NAME,mixed-in,SELECTOR
   - MATCH,GLOBAL
 EOF
 )
