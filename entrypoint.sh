@@ -134,78 +134,156 @@ parse_awg_config() {
   local config_file="$1"
   local awg_name=$(basename "$config_file" .conf)
 
-  # Чтение параметра WG/AWG без учёта регистра
-  read_cfg() {
-    local key="$1"
-    grep -Ei "^${key}[[:space:]]*=" "$config_file" | sed -E "s/^${key}[[:space:]]*=[[:space:]]*//I"
-  }
+read_cfg() {
+  local key="$1"
+  grep -iE "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*" "$config_file" 2>/dev/null | \
+    tail -n1 | \
+    sed -E 's/^[[:space:]]*[^=]*=[[:space:]]*//I' | \
+    tr -d '\r\n' | \
+    sed -E 's/^[[:space:]]+|[[:space:]]+$//g'
+}
 
   local private_key=$(read_cfg "PrivateKey")
   local address=$(read_cfg "Address")
-  address=$(echo "$address" | tr ',' '\n' | grep -v ':' | head -n1)
   local dns=$(read_cfg "DNS")
-  dns=$(echo "$dns" | tr ',' '\n' | grep -v ':' | sed 's/^ *//;s/ *$//' | paste -sd, -)
-
   local mtu=$(read_cfg "MTU")
-  local jc=$(read_cfg "Jc")
-  local jmin=$(read_cfg "Jmin")
-  local jmax=$(read_cfg "Jmax")
-  local s1=$(read_cfg "S1")
-  local s2=$(read_cfg "S2")
-  local h1=$(read_cfg "H1")
-  local h2=$(read_cfg "H2")
-  local h3=$(read_cfg "H3")
-  local h4=$(read_cfg "H4")
-  local i1=$(read_cfg "I1")
-  local i2=$(read_cfg "I2")
-  local i3=$(read_cfg "I3")
-  local i4=$(read_cfg "I4")
-  local i5=$(read_cfg "I5")
-  local j1=$(read_cfg "J1")
-  local j2=$(read_cfg "J2")
-  local j3=$(read_cfg "J3")
+  local keepalive=$(read_cfg "PersistentKeepalive")
+
+  local jc=$(read_cfg "Jc");         local jmin=$(read_cfg "Jmin");     local jmax=$(read_cfg "Jmax")
+  local s1=$(read_cfg "S1");         local s2=$(read_cfg "S2")
+  local s3=$(read_cfg "S3");         local s4=$(read_cfg "S4")
+  local h1=$(read_cfg "H1");         local h2=$(read_cfg "H2");         local h3=$(read_cfg "H3");         local h4=$(read_cfg "H4")
+  local i1=$(read_cfg "I1");         local i2=$(read_cfg "I2");         local i3=$(read_cfg "I3")
+  local i4=$(read_cfg "I4");         local i5=$(read_cfg "I5")          
+  local j1=$(read_cfg "J1");         local j2=$(read_cfg "J2");         local j3=$(read_cfg "J3")
   local itime=$(read_cfg "ITime")
 
   local public_key=$(read_cfg "PublicKey")
   local psk=$(read_cfg "PresharedKey")
   local endpoint=$(read_cfg "Endpoint")
 
-  local server=$(echo "$endpoint" | cut -d':' -f1)
-  local port=$(echo "$endpoint" | cut -d':' -f2)
+  local ip_v4=""
+  local ip_v6=""
+  if [ -n "$address" ]; then
+    while IFS= read -r addr; do
+      addr=$(echo "$addr" | sed 's/[[:space:]]//g')
+      if echo "$addr" | grep -q ':'; then
+        [ -n "$ip_v6" ] && ip_v6="$ip_v6,"
+        ip_v6="${ip_v6}${addr}"
+      else
+        [ -n "$ip_v4" ] && ip_v4="$ip_v4,"
+        ip_v4="${ip_v4}${addr}"
+      fi
+    done < <(echo "$address" | tr ',' '\n')
+  fi
+
+  local server=""
+  local port=""
+  if [ -n "$endpoint" ]; then
+    endpoint=$(echo "$endpoint" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if echo "$endpoint" | grep -q '\['; then
+      server=$(echo "$endpoint" | sed -E 's@^\[([^]]+)\]:(.*)$@\1@')
+      port=$(echo "$endpoint" | sed -E 's@^\[([^]]+)\]:(.*)$@\2@')
+    else
+      server=$(echo "$endpoint" | cut -d':' -f1)
+      port=$(echo "$endpoint" | cut -d':' -f2-)
+    fi
+  fi
+
+  local allowed_ips_raw=$(read_cfg "AllowedIPs")
+  if [ -n "$allowed_ips_raw" ]; then
+    allowed_ips_yaml=$(echo "$allowed_ips_raw" | tr ',' '\n' | \
+      sed -E 's/^[[:space:]]*([0-9a-fA-F\.:\/-]+)[[:space:]]*$/\1/' | \
+      grep -v '^$' | grep -E '^[0-9a-fA-F\.:]+/[0-9]+$' | \
+      sed 's/.*/"&"/' | paste -sd, -)
+    [ -z "$allowed_ips_yaml" ] && allowed_ips_yaml='"0.0.0.0/0", "::/0"'
+  else
+    allowed_ips_yaml='"0.0.0.0/0", "::/0"'
+  fi
 
   echo "  - name: \"$awg_name\""
   echo "    type: wireguard"
-
   [ -n "$private_key" ] && echo "    private-key: $private_key"
   [ -n "$server" ] && echo "    server: $server"
   [ -n "$port" ] && echo "    port: $port"
-  [ -n "$address" ] && echo "    ip: $address"
-  [ -n "$mtu" ] && echo "    mtu: $mtu"
+  [ -n "$ip_v4" ] && echo "    ip: $ip_v4"
+  [ -n "$ip_v6" ] && echo "    ipv6: $ip_v6"
   [ -n "$public_key" ] && echo "    public-key: $public_key"
-
-  echo "    allowed-ips: ['0.0.0.0/0']"
   [ -n "$psk" ] && echo "    pre-shared-key: $psk"
-
-  echo "    udp: true"
-
-  [ -n "$dns" ] && echo "    dns: [ $dns ]"
-  echo "    remote-dns-resolve: true"
-  awg_params="jc jmin jmax s1 s2 h1 h2 h3 h4 i1 i2 i3 i4 i5 j1 j2 j3 itime"
-  awg_has_value=false
-  for v in $awg_params; do
-      eval val=\$$v
-      if [ -n "$val" ]; then
-          awg_has_value=true
-          break
-      fi
-  done
-  if $awg_has_value; then
-      echo "    amnezia-wg-option:"
-      for v in $awg_params; do
-          eval val=\$$v
-          [ -n "$val" ] && echo "      $v: $val"
-      done
+  [ -n "$keepalive" ] && echo "    persistent-keepalive: $keepalive"
+  [ -n "$mtu" ] && echo "    mtu: $mtu"
+  local dialer_proxy_raw=$(read_cfg "DialerProxy")
+  if [ -n "$dialer_proxy_raw" ]; then
+    local dialer_proxy_clean=$(echo "$dialer_proxy_raw" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g; s/^["'\'']|["'\'']$//g')
+    if [ -n "$dialer_proxy_clean" ]; then
+      echo "    dialer-proxy: \"$dialer_proxy_clean\""
+    fi
   fi
+
+  local reserved_raw=$(read_cfg "Reserved")
+  if [ -n "$reserved_raw" ]; then
+    local reserved_clean=$(echo "$reserved_raw" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g; s/^["'\'']|["'\'']$//g')
+    if [ -n "$reserved_clean" ]; then
+      if echo "$reserved_clean" | grep -q ','; then
+        echo "    reserved: [$reserved_clean]"
+      else
+        echo "    reserved: \"$reserved_clean\""
+      fi
+    fi
+  fi
+
+  echo "    allowed-ips: [$allowed_ips_yaml]"
+  echo "    udp: true"
+  local dns_raw=$(read_cfg "DNS")
+  if [ -n "$dns_raw" ]; then
+    local dns_list=$(echo "$dns_raw" | tr ',' '\n' | \
+      sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | \
+      grep -v '^$' | sed 's/.*/"&"/' | paste -sd, -)
+    echo "    dns: [$dns_list]"
+  fi
+  local remote_resolve_raw=$(read_cfg "RemoteDnsResolve")
+  if [ -n "$remote_resolve_raw" ]; then
+    case "$(echo "$remote_resolve_raw" | tr '[:upper:]' '[:lower:]')" in
+      1|true|yes|on)
+        echo "    remote-dns-resolve: true"
+        ;;
+      0|false|no|off)
+        echo "    remote-dns-resolve: false"
+        ;;
+    esac
+  fi
+
+  local awg_params="jc jmin jmax s1 s2 s3 s4 h1 h2 h3 h4 i1 i2 i3 i4 i5 j1 j2 j3 itime"
+  local has_awg_param=0
+  for v in $awg_params; do
+    eval val=\$$v
+    [ -n "$val" ] && has_awg_param=1
+  done
+
+  if [ "$has_awg_param" -eq 1 ]; then
+    echo "    amnezia-wg-option:"
+    [ -n "$jc" ]     && echo "      jc: $jc"
+    [ -n "$jmin" ]   && echo "      jmin: $jmin"
+    [ -n "$jmax" ]   && echo "      jmax: $jmax"
+    [ -n "$s1" ]     && echo "      s1: $s1"
+    [ -n "$s2" ]     && echo "      s2: $s2"
+    [ -n "$s3" ]     && echo "      s3: $s3"
+    [ -n "$s4" ]     && echo "      s4: $s4"
+    [ -n "$h1" ]     && echo "      h1: $h1"
+    [ -n "$h2" ]     && echo "      h2: $h2"
+    [ -n "$h3" ]     && echo "      h3: $h3"
+    [ -n "$h4" ]     && echo "      h4: $h4"
+    [ -n "$i1" ]     && echo "      i1: $i1"
+    [ -n "$i2" ]     && echo "      i2: $i2"
+    [ -n "$i3" ]     && echo "      i3: $i3"
+    [ -n "$i4" ]     && echo "      i4: $i4"
+    [ -n "$i5" ]     && echo "      i5: $i5"
+    [ -n "$j1" ]     && echo "      j1: $j1"
+    [ -n "$j2" ]     && echo "      j2: $j2"
+    [ -n "$j3" ]     && echo "      j3: $j3"
+    [ -n "$itime" ]  && echo "      itime: $itime"
+  fi
+  echo ""
 }
 
 add_provider_block() {
