@@ -1,4 +1,5 @@
 #!/bin/sh
+sleep 1
 
 if [ -f /etc/alpine-release ]; then
     OS="alpine"
@@ -91,8 +92,10 @@ EOF
 
 AWG_DIR="$WORKDIR/awg"
 TEMPLATE_DIR="$WORKDIR/template"
+USER_SH_DIR="$WORKDIR/user_sh"
 mkdir -p $TEMPLATE_DIR
 mkdir -p $AWG_DIR
+mkdir -p $USER_SH_DIR
 TEMPLATE_FILE="$TEMPLATE_DIR/$CONFIG"
 BACKUP_PATH="$TEMPLATE_DIR/default_config_old.yaml"
 
@@ -148,6 +151,7 @@ read_cfg() {
   local dns=$(read_cfg "DNS")
   local mtu=$(read_cfg "MTU")
   local keepalive=$(read_cfg "PersistentKeepalive")
+  local workers=$(read_cfg "Workers")
 
   local jc=$(read_cfg "Jc");         local jmin=$(read_cfg "Jmin");     local jmax=$(read_cfg "Jmax")
   local s1=$(read_cfg "S1");         local s2=$(read_cfg "S2")
@@ -219,6 +223,7 @@ read_cfg() {
       echo "    dialer-proxy: \"$dialer_proxy_clean\""
     fi
   fi
+  [ -n "$workers" ] && echo "    workers: $workers"
 
   local reserved_raw=$(read_cfg "Reserved")
   if [ -n "$reserved_raw" ]; then
@@ -360,6 +365,13 @@ EOF
 
 export PROVIDERS_BLOCK
 export PROVIDERS_LIST
+
+# пользовательские sh-скрипты подключаются (source) и выполняются в текущем shell-процессе с общим окружением
+for script in "$USER_SH_DIR"/*.sh; do
+  [ -f "$script" ] || continue
+  echo "Running user scripts: $script"
+  . "$script"
+done
 
 envsubst < "$TEMPLATE_DIR/$CONFIG" > "$WORKDIR/$CONFIG"
 

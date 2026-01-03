@@ -78,31 +78,45 @@ ENV DNS_USE_SYSTEM_HOSTS="true"
 ENV IPV6="true"
 
 RUN case "$TARGETPLATFORM" in \
+        linux/arm/v7) \
+            apk add --no-cache iptables iptables-legacy && \
+            # IPv4
+            rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore && \
+            ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables && \
+            ln -s /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
+            ln -s /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
+            # IPv6
+            rm -f /usr/sbin/ip6tables /usr/sbin/ip6tables-save /usr/sbin/ip6tables-restore && \
+            ln -s /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables && \
+            ln -s /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
+            ln -s /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore && \
+            rm -vrf /var/log/apk.log ;; \
+        *) echo "Unsupported platform: $TARGETPLATFORM" ;; \
+    esac
+
+RUN case "$TARGETPLATFORM" in \
+        linux/arm64 | linux/amd64) \
+            apk add --no-cache nftables && \
+             rm -vrf /var/log/apk.log ;; \
+        *) echo "Unsupported platform: $TARGETPLATFORM" ;; \
+    esac
+
+RUN case "$TARGETPLATFORM" in \
         "linux/arm/v5") \
             apt update && \
-            apt install -y bash iptables tzdata gettext iputils-ping traceroute procps ca-certificates && \
+            apt install -y bash iptables tzdata gettext iputils-ping traceroute procps ca-certificates tini && \
             apt autoremove -y && \
             apt clean -y && \
             rm -rf /var/cache/apt/archives /var/lib/apt/lists/* && \
             sed -i '1s|^#!/bin/sh|#!/bin/bash|' /entrypoint.sh;; \
         linux/arm/v7) \
-            apk add --no-cache iptables iptables-legacy tzdata envsubst ca-certificates && \
+            apk add --no-cache tzdata envsubst ca-certificates tini && \
             rm -vrf /var/cache/apk/* ;; \
         linux/amd64 | linux/arm64) \
-            apk add --no-cache iptables iptables-legacy tzdata envsubst ca-certificates nftables && \
+            apk add --no-cache tzdata envsubst ca-certificates tini && \
             rm -vrf /var/cache/apk/* ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac && \
-    # IPv4
-    rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore && \
-    ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables && \
-    ln -s /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
-    ln -s /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
-    # IPv6
-    rm -f /usr/sbin/ip6tables /usr/sbin/ip6tables-save /usr/sbin/ip6tables-restore && \
-    ln -s /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables && \
-    ln -s /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
-    ln -s /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore && \
     chmod +x /entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
