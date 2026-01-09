@@ -58,12 +58,36 @@ ARG TARGETARCH
 ARG TARGETOS
 ARG TARGETVARIANT
 
+RUN set -eux; \
+    case "$TARGETPLATFORM" in \
+      linux/arm64 | linux/amd64) \
+        apk add --no-cache nftables tini ca-certificates tzdata ;; \
+      linux/arm/v7) \
+        apk add --no-cache iptables iptables-legacy tini ca-certificates tzdata && \
+        # IPv4
+        ln -sf /usr/sbin/iptables-legacy /usr/sbin/iptables && \
+        ln -sf /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
+        ln -sf /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
+        # IPv6
+        ln -sf /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables && \
+        ln -sf /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
+        ln -sf /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore ;; \
+      *) \
+        echo "Unsupported platform: $TARGETPLATFORM" >&2; exit 1 ;; \
+    esac && \
+    rm -rf /var/cache/apk/*
+
 COPY --from=build /tmp/build/ /
 
 ENV DISABLE_NFTABLES=1
 ENV CONFIG="default_config.yaml"
 ENV WORKDIR="/etc/mihomo"
+ENV HEALTH_CHECK_ENABLE="true"
 ENV HEALTH_CHECK_URL="https://www.gstatic.com/generate_204"
+ENV HEALTH_CHECK_INTERVAL=300
+ENV HEALTH_CHECK_TIMEOUT=5000
+ENV HEALTH_CHECK_LAZY="true"
+ENV HEALTH_CHECK_EXPECTED_STATUS=204
 ENV MIXED_PORT=1080
 ENV UI_PORT=9090
 ENV EXTERNAL_CONTROLLER_ADDRESS="0.0.0.0"
@@ -76,30 +100,7 @@ ENV EXTERNAL_UI_PATH="ui"
 ENV DNS_ENABLE="true"
 ENV DNS_USE_SYSTEM_HOSTS="true"
 ENV IPV6="true"
-
-RUN case "$TARGETPLATFORM" in \
-        linux/arm/v7) \
-            apk add --no-cache iptables iptables-legacy && \
-            # IPv4
-            rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore && \
-            ln -s /usr/sbin/iptables-legacy /usr/sbin/iptables && \
-            ln -s /usr/sbin/iptables-legacy-save /usr/sbin/iptables-save && \
-            ln -s /usr/sbin/iptables-legacy-restore /usr/sbin/iptables-restore && \
-            # IPv6
-            rm -f /usr/sbin/ip6tables /usr/sbin/ip6tables-save /usr/sbin/ip6tables-restore && \
-            ln -s /usr/sbin/ip6tables-legacy /usr/sbin/ip6tables && \
-            ln -s /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
-            ln -s /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore && \
-            rm -vrf /var/log/apk.log ;; \
-        *) echo "Unsupported platform: $TARGETPLATFORM" ;; \
-    esac
-
-RUN case "$TARGETPLATFORM" in \
-        linux/arm64 | linux/amd64) \
-            apk add --no-cache nftables && \
-             rm -vrf /var/log/apk.log ;; \
-        *) echo "Unsupported platform: $TARGETPLATFORM" ;; \
-    esac
+ENV PROVIDER_INTERVAL=3600
 
 RUN case "$TARGETPLATFORM" in \
         "linux/arm/v5") \
@@ -110,10 +111,10 @@ RUN case "$TARGETPLATFORM" in \
             rm -rf /var/cache/apt/archives /var/lib/apt/lists/* && \
             sed -i '1s|^#!/bin/sh|#!/bin/bash|' /entrypoint.sh;; \
         linux/arm/v7) \
-            apk add --no-cache tzdata envsubst ca-certificates tini && \
+            apk add --no-cache envsubst && \
             rm -vrf /var/cache/apk/* ;; \
         linux/amd64 | linux/arm64) \
-            apk add --no-cache tzdata envsubst ca-certificates tini && \
+            apk add --no-cache envsubst && \
             rm -vrf /var/cache/apk/* ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac && \

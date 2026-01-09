@@ -133,6 +133,14 @@ if [[ "$EXTERNAL_UI_URL" != "$LAST_UI_URL" ]]; then
   echo "$EXTERNAL_UI_URL" > "$UI_URL_CHECK"
 fi
 
+# генерируем hwid для серверов и подписок с ограничениями по устройствам
+HWID_STORE="$WORKDIR/.hwid"
+if [ ! -f "$HWID_STORE" ]; then
+  cat /proc/sys/kernel/random/uuid | tr -d '-' > "$HWID_STORE"
+fi
+HWID="${HWID:-$(cat "$HWID_STORE")}"
+
+###
 parse_awg_config() {
   local config_file="$1"
   local awg_name=$(basename "$config_file" .conf)
@@ -158,7 +166,7 @@ read_cfg() {
   local s3=$(read_cfg "S3");         local s4=$(read_cfg "S4")
   local h1=$(read_cfg "H1");         local h2=$(read_cfg "H2");         local h3=$(read_cfg "H3");         local h4=$(read_cfg "H4")
   local i1=$(read_cfg "I1");         local i2=$(read_cfg "I2");         local i3=$(read_cfg "I3")
-  local i4=$(read_cfg "I4");         local i5=$(read_cfg "I5")          
+  local i4=$(read_cfg "I4");         local i5=$(read_cfg "I5")
   local j1=$(read_cfg "J1");         local j2=$(read_cfg "J2");         local j3=$(read_cfg "J3")
   local itime=$(read_cfg "ITime")
 
@@ -291,80 +299,88 @@ read_cfg() {
   echo ""
 }
 
-add_provider_block() {
-    local name="$1"
-    local path="$2"
-
-    PROVIDERS_BLOCK="${PROVIDERS_BLOCK}  ${name}:
-    type: file
-    path: ${path}
-    health-check:
-      enable: true
-      url: $HEALTH_CHECK_URL
-      interval: 300
-      timeout: 5000
-      lazy: true
-      expected-status: 204
-"
-    PROVIDERS_LIST="${PROVIDERS_LIST}      - ${name}
-"
-}
-
 PROVIDERS_BLOCK=""
 PROVIDERS_LIST=""
-####
+
+add_provider() {
+    local name="$1"
+    local type="$2"        # file / http
+    local source="$3"      # path / url
+    local add_header="${4:-false}"
+
+    local header=""
+    local interval_block=""
+    local source_key="path"
+
+    # какой ключ использовать
+    [[ "$type" == "http" ]] && source_key="url"
+
+    # header только для SUB*
+    if [[ "$add_header" == "true" && "$name" != "AWG" && "$name" != "SRV" ]]; then
+        header="
+    header:
+      x-hwid:
+      - $HWID"
+    fi
+
+    # interval только для http
+    if [[ "$type" == "http" ]]; then
+        interval_block="    interval: ${PROVIDER_INTERVAL}"$'\n'
+    fi
+
+    PROVIDERS_BLOCK="${PROVIDERS_BLOCK}  ${name}:
+    type: ${type}
+    ${source_key}: \"${source}\"
+${interval_block}    health-check:
+      enable: ${HEALTH_CHECK_ENABLE}
+      url: ${HEALTH_CHECK_URL}
+      interval: ${HEALTH_CHECK_INTERVAL}
+      timeout: ${HEALTH_CHECK_TIMEOUT}
+      lazy: ${HEALTH_CHECK_LAZY}
+      expected-status: ${HEALTH_CHECK_EXPECTED_STATUS}${header}
+"
+
+    PROVIDERS_LIST="${PROVIDERS_LIST}      - ${name}"$'\n'
+}
+
+
+### SRV
 srv_file="$WORKDIR/srv.yaml"
-if env | grep -qE '^(SRV)[0-9]'; then
-> "$srv_file"
-env | while IFS='=' read -r name value; do
-    case "$name" in
-        SRV[0-9]*)
-            echo "#== $name ==" >> "$srv_file"
-            printf "%s\n" "$value" | while IFS= read -r line; do
-                echo "$line" >> "$srv_file"
-            done
-            ;;
-    esac
-done
-
-add_provider_block "SRV" "$srv_file"
-
+if env | grep -qE '^SRV[0-9]'; then
+    > "$srv_file"
+    while IFS='=' read -r name value; do
+        case "$name" in
+            SRV[0-9]*)
+                echo "#== $name ==" >> "$srv_file"
+                printf "%s\n" "$value" >> "$srv_file"
+                ;;
+        esac
+    done <<EOF
+$(env)
+EOF
+    add_provider "SRV" "file" "$srv_file"
 fi
-###
+
+### AWG
 awg_file="$WORKDIR/awg.yaml"
-if find "$AWG_DIR" -name "*.conf" | grep -q . 2>/dev/null; then
+if find "$AWG_DIR" -name "*.conf" -print -quit 2>/dev/null | grep -q .; then
     echo "proxies:" > "$awg_file"
     find "$AWG_DIR" -name "*.conf" | while read -r conf; do
-      parse_awg_config "$conf"
-    done >> $awg_file
-
-add_provider_block "AWG" "$awg_file"
-
+        parse_awg_config "$conf"
+    done >> "$awg_file"
+    add_provider "AWG" "file" "$awg_file"
 fi
-###
 
+### SUB
 while IFS='=' read -r name value; do
-  case "$name" in
-    SUB[0-9]*)
-      PROVIDERS_BLOCK="${PROVIDERS_BLOCK}  ${name}:
-    url: \"${value}\"
-    type: http
-    interval: 86400
-    health-check:
-      enable: true
-      url: \"${HEALTH_CHECK_URL}\"
-      interval: 86400
-"
-    PROVIDERS_LIST="${PROVIDERS_LIST}      - $(echo "$name")
-"
-      ;;
-  esac
+    case "$name" in
+        SUB[0-9]*)
+            add_provider "$name" "http" "$value" true
+            ;;
+    esac
 done <<EOF
 $(env)
 EOF
-
-export PROVIDERS_BLOCK
-export PROVIDERS_LIST
 
 # пользовательские sh-скрипты подключаются (source) и выполняются в текущем shell-процессе с общим окружением
 for script in "$USER_SH_DIR"/*.sh; do
@@ -372,6 +388,11 @@ for script in "$USER_SH_DIR"/*.sh; do
   echo "Running user scripts: $script"
   . "$script"
 done
+
+# экспортируем переменные заданные текущим скриптом для использования в шаблонах конфигурации mihomo
+export PROVIDERS_BLOCK
+export PROVIDERS_LIST
+export HWID
 
 envsubst < "$TEMPLATE_DIR/$CONFIG" > "$WORKDIR/$CONFIG"
 
