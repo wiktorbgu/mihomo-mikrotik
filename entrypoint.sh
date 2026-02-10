@@ -7,9 +7,11 @@ else
     OS="other"
 fi
 
+lsmod | grep -q '^nf_tables' && NFT_CORE=1 || NFT_CORE=0
+
 if [ "$OS" = "alpine" ]; then
   # если в системе нет модуля nftables
-  if ! lsmod | grep -q nf_tables; then
+  if [ $NFT_CORE -eq 0 ]; then
       # удалить nftables если есть
       apk info -e nftables >/dev/null 2>&1 && apk del nftables >/dev/null 2>&1
       # установить iptables если отсутствуют
@@ -40,62 +42,11 @@ if [ "$OS" = "alpine" ]; then
   fi
 fi
 
-DEFAULT_CONFIG=$(cat << 'EOF'
-external-controller: $EXTERNAL_CONTROLLER_ADDRESS:$UI_PORT
-external-ui: $EXTERNAL_UI_PATH
-external-ui-url: $EXTERNAL_UI_URL
-secret: $UI_SECRET
-unified-delay: true
-log-level: $LOG_LEVEL
-ipv6: $IPV6
-
-dns:
-  enable: $DNS_ENABLE
-  use-system-hosts: $DNS_USE_SYSTEM_HOSTS
-  nameserver:
-  - system
-
-proxy-providers:
-$PROVIDERS_BLOCK
-
-proxy-groups:
-  - name: SELECTOR
-    type: select
-    use:
-$PROVIDERS_LIST
-  - name: QUIC
-    type: select
-    proxies:
-      - PASS
-      - REJECT
-
-listeners:
-  - name: mixed-in
-    type: mixed
-    port: $MIXED_PORT
-  - name: tun-in
-    type: tun
-    stack: $TUN_STACK
-    auto-detect-interface: $TUN_AUTO_DETECT_INTERFACE
-    auto-route: $TUN_AUTO_ROUTE
-    auto-redirect: $TUN_AUTO_REDIRECT
-    inet4-address:
-    - $TUN_INET4_ADDRESS
-
-rules:
-  - AND,((NETWORK,udp),(DST-PORT,443)),QUIC
-  - IN-NAME,tun-in,SELECTOR
-  - IN-NAME,mixed-in,SELECTOR
-  - MATCH,GLOBAL
-EOF
-)
-
 AWG_DIR="$WORKDIR/awg"
 TEMPLATE_DIR="$WORKDIR/template"
 USER_SH_DIR="$WORKDIR/user_sh"
-mkdir -p $TEMPLATE_DIR
-mkdir -p $AWG_DIR
-mkdir -p $USER_SH_DIR
+mkdir -p "$AWG_DIR" "$TEMPLATE_DIR" "$USER_SH_DIR"
+DEFAULT_CONFIG_FILE="/etc/mihomo_preset/template/default_config.yaml"
 TEMPLATE_FILE="$TEMPLATE_DIR/$CONFIG"
 BACKUP_PATH="$TEMPLATE_DIR/default_config_old.yaml"
 
@@ -112,18 +63,27 @@ fi
 # если не указано имя кастомного конфига, испольузем и актуализируем default
 if [ "$CONFIG" = "default_config.yaml" ]; then
   if [ -f "$TEMPLATE_FILE" ]; then
-    if ! diff -q <(echo "$DEFAULT_CONFIG") "$TEMPLATE_FILE" >/dev/null; then
+    if ! diff -q "$DEFAULT_CONFIG_FILE" "$TEMPLATE_FILE" >/dev/null; then
       mv "$TEMPLATE_FILE" "$BACKUP_PATH"
-      echo "$DEFAULT_CONFIG" > "$TEMPLATE_FILE"
+      cp "$DEFAULT_CONFIG_FILE" "$TEMPLATE_FILE"
     fi
   else
-    echo "$DEFAULT_CONFIG" > "$TEMPLATE_FILE"
+    cp "$DEFAULT_CONFIG_FILE" "$TEMPLATE_FILE"
   fi
 else
-  if [ ! -f "$TEMPLATE_FILE" ]; then
-    echo "$DEFAULT_CONFIG" > "$TEMPLATE_FILE"
+  if [ -f "$TEMPLATE_FILE" ]; then
+    # есть заданный шаблон — используем его
+    CONFIG_FILE="$TEMPLATE_FILE"
+  elif [ -f "$WORKDIR/$CONFIG" ]; then
+    # шаблона нет, но есть кастомный конфиг
+    CONFIG_FILE="$WORKDIR/$CONFIG"
+    ENVSUBST=0
+  else
+    # нет ни шаблона, ни кастомного конфига
+    echo "ERROR: Config not found! Checked: $TEMPLATE_FILE and $WORKDIR/$CONFIG"
+    exit 1
   fi
-fi
+fi    
 
 # смена веб панели при замене ссылки на её загрузку
 UI_URL_CHECK="$WORKDIR/.ui_url"
@@ -394,7 +354,10 @@ export PROVIDERS_BLOCK
 export PROVIDERS_LIST
 export HWID
 
-envsubst < "$TEMPLATE_DIR/$CONFIG" > "$WORKDIR/$CONFIG"
+# если это шаблон, заполняем переменными конфиг файл
+if [ "${ENVSUBST:-1}" -eq 1 ]; then
+  envsubst < "$TEMPLATE_FILE" > "$WORKDIR/$CONFIG"
+fi
 
 CMD_MIHOMO="${@:-"-d $WORKDIR -f $WORKDIR/$CONFIG"}"
 # print version mihomo to log

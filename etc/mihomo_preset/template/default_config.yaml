@@ -1,0 +1,53 @@
+external-controller: $EXTERNAL_CONTROLLER_ADDRESS:$UI_PORT
+external-ui: $EXTERNAL_UI_PATH
+external-ui-url: $EXTERNAL_UI_URL
+secret: $UI_SECRET
+unified-delay: true
+log-level: $LOG_LEVEL
+ipv6: $IPV6
+find-process-mode: off
+tcp-concurrent: true
+keep-alive-idle: 60
+keep-alive-interval: 30
+
+profile:
+  store-selected: true
+
+dns:
+  enable: $DNS_ENABLE
+  use-system-hosts: $DNS_USE_SYSTEM_HOSTS
+  nameserver:
+  - system
+
+proxy-providers:
+$PROVIDERS_BLOCK
+
+proxy-groups:
+  - name: SELECTOR
+    type: select
+    use:
+$PROVIDERS_LIST
+  - name: QUIC UDP 443
+    type: select
+    proxies:
+      - PASS
+      - REJECT
+
+listeners:
+  - name: mixed-in
+    type: mixed
+    port: $MIXED_PORT
+  - name: tun-in
+    type: tun
+    stack: $TUN_STACK
+    auto-detect-interface: $TUN_AUTO_DETECT_INTERFACE
+    auto-route: $TUN_AUTO_ROUTE
+    auto-redirect: $TUN_AUTO_REDIRECT
+    inet4-address:
+    - $TUN_INET4_ADDRESS
+
+rules:
+  - AND,((NETWORK,udp),(DST-PORT,443)),QUIC UDP 443
+  - IN-NAME,tun-in,SELECTOR
+  - IN-NAME,mixed-in,SELECTOR
+  - MATCH,GLOBAL
