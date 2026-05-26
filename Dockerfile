@@ -5,13 +5,16 @@ ARG TARGETOS
 ARG TARGETVARIANT
 
 # сборка mihomo с исправлениями загрузки битых ссылок в публичных подписках
-ARG AMD64VERSION=1
-ARG WITH_GVISOR=1
-
 WORKDIR /src
+ARG WITH_GVISOR=1
 
 # инструменты для сборки
 RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make
+
+ENV GOCACHE=/var/cache/go-build
+ENV GOTMPDIR=/var/tmp/go-tmp
+ENV GOFLAGS="-modcacherw"
+RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
 # Переключаемся на нужный тэг
 RUN git clone https://github.com/MetaCubeX/mihomo.git /src && \
@@ -50,7 +53,7 @@ RUN mkdir -p build/usr/bin build/etc && \
     chmod -R +x .
 
 COPY entrypoint.sh build/
-COPY etc build/etc/
+COPY mihomo-fs build/
 
 # Базовые образы для каждой архитектуры
 FROM --platform=linux/amd64 wiktorbgu/alpine-mikrotik:ip-nf-tables AS linux-amd64
@@ -67,6 +70,7 @@ ARG TARGETVARIANT
 
 COPY --from=build /tmp/build/ /
 
+# DISABLE_NFTABLES нужна именно для михомо
 ENV DISABLE_NFTABLES=1
 ENV CONFIG="default_config.yaml"
 ENV WORKDIR="/etc/mihomo"
@@ -85,15 +89,28 @@ ENV TUN_AUTO_REDIRECT="true"
 ENV TUN_AUTO_DETECT_INTERFACE="true"
 ENV TUN_AUTO_ROUTE="true"
 ENV EXTERNAL_UI_PATH="ui"
-ENV DNS_ENABLE="true"
-ENV DNS_USE_SYSTEM_HOSTS="true"
 ENV IPV6="true"
 ENV PROVIDER_INTERVAL=3600
+ENV DNS_ENABLE="true"
+ENV DNS_USE_SYSTEM_HOSTS="true"
+ENV DNS_CACHE_ALGORITHM="arc"
+ENV DNS_PREFER_H3="false"
+ENV DNS_LISTEN="0.0.0.0:53"
+ENV DNS_ENHANCED_MODE="fake-ip"
+ENV DNS_FAKE_IP_RANGE="198.18.0.0/15"
+ENV DNS_FAKE_IP_TTL=1
+ENV TCP_CONCURRENT="true"
+ENV KEEP_ALIVE_IDLE=60
+ENV KEEP_ALIVE_INTERVAL=30
+ENV FIND_PROCESS_MODE="off"
+ENV STORE_SELECTED="true"
+ENV UNIFIED_DELAY="true"
+ENV LOADBALANCE_STRATEGY="consistent-hashing"
 
 RUN case "$TARGETPLATFORM" in \
         "linux/arm/v5") \
             apt update && \
-            apt install -y bash iptables tzdata gettext-base iputils-ping traceroute procps ca-certificates kmod tini && \
+            apt install -y bash iptables tzdata gettext-base iputils-ping traceroute procps ca-certificates kmod tini iproute2 && \
             apt autoremove -y && \
             apt clean -y && \
             rm -rf /var/cache/apt/archives /var/lib/apt/lists/* && \

@@ -42,6 +42,45 @@ if [ "$OS" = "alpine" ]; then
   fi
 fi
 
+# настроить маскарад
+if [ $NFT_CORE -eq 1 ]; then
+  nft add table ip nat
+  nft add chain ip nat postrouting { type nat hook postrouting priority srcnat \; }
+  nft add rule ip nat postrouting meta oiftype ether ip daddr != { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255} masquerade
+fi
+
+# network
+FIRST_IFACE=$(ip -o link show | awk -F': ' '/link\/ether/ {print $2; exit}' | cut -d@ -f1)
+OTHER_IFACES=$(ip -o link show | awk -F': ' '/link\/ether/ {print $2}' | cut -d@ -f1)
+GATEWAY=$(ip route | awk -v iface="$FIRST_IFACE" '$1=="default" && $0~iface {print $3; exit}')
+LOCAL_IPS=$(
+  ip -4 -o addr show scope global \
+  | awk '
+      NR==FNR && /link\/ether/ {
+          sub(/@.*/, "", $2)
+          iface[$2]=1
+          next
+      }
+      $2 in iface {
+          split($4,a,"/")
+          print a[1]
+      }
+    ' <(ip -o link show) - \
+  | paste -sd, -
+)
+
+# удалить ранние main/default for ros = 7.22
+ip rule | awk '
+/lookup main/ && $1+0 < 32766 {gsub(":","",$1); print $1}
+/lookup default/ && $1+0 < 32767 {gsub(":","",$1); print $1}
+' | while read prio; do
+    ip rule del priority "$prio" 2>/dev/null
+done
+# гарантировать системные правила
+ip rule | grep -q "lookup main" || ip rule add lookup main priority 32766
+ip rule | grep -q "lookup default" || ip rule add lookup default priority 32767
+
+#
 AWG_DIR="$WORKDIR/awg"
 TEMPLATE_DIR="$WORKDIR/template"
 USER_SH_DIR="$WORKDIR/user_sh"
@@ -49,16 +88,6 @@ mkdir -p "$AWG_DIR" "$TEMPLATE_DIR" "$USER_SH_DIR"
 DEFAULT_CONFIG_FILE="/etc/mihomo_preset/template/default_config.yaml"
 TEMPLATE_FILE="$TEMPLATE_DIR/$CONFIG"
 BACKUP_PATH="$TEMPLATE_DIR/default_config_old.yaml"
-
-# завершаем работу если не используется кастомный конфиг или для дефолта не задан хотя бы один необходимый параметр
-if [ "$CONFIG" = "default_config.yaml" ]; then
-  has_env_vars=$(env | grep -qE '^(SRV|SUB)[0-9]' && echo 1 || echo 0)
-  has_conf_files=$(find "$AWG_DIR" -type f -name '*.conf' 2>/dev/null | grep -q . && echo 1 || echo 0)
-  if [ "$has_env_vars" -eq 0 ] && [ "$has_conf_files" -eq 0 ]; then
-    echo "No server/subscription variables (SRV*/SUB*) and no *.conf files wireguard/amneziawg in $AWG_DIR. Exiting."
-    exit 1
-  fi
-fi
 
 # если не указано имя кастомного конфига, испольузем и актуализируем default
 if [ "$CONFIG" = "default_config.yaml" ]; then
@@ -70,6 +99,7 @@ if [ "$CONFIG" = "default_config.yaml" ]; then
   else
     cp "$DEFAULT_CONFIG_FILE" "$TEMPLATE_FILE"
   fi
+  CONFIG_FILE=$TEMPLATE_FILE
 else
   if [ -f "$TEMPLATE_FILE" ]; then
     # есть заданный шаблон — используем его
@@ -341,6 +371,135 @@ while IFS='=' read -r name value; do
 done <<EOF
 $(env)
 EOF
+
+### VETH
+if [ -n "$OTHER_IFACES" ]; then
+TABLE_BASE=200
+i=0
+veth_file="$WORKDIR/veth.yaml"
+IFACE_COUNT=$(echo "$OTHER_IFACES" | wc -w)
+
+# если нет ни серверов ни конфигов awg ни дополнительных veth — добавляем единственный DIRECT
+  if [ -z "$PROVIDERS_LIST" ] && [ "$IFACE_COUNT" -eq 1 ]; then
+PROVIDERS_LIST="${PROVIDERS_LIST}    proxies:
+      - DIRECT"
+# либо добавляем все остальные veth как прокси
+elif [ "$IFACE_COUNT" -gt 1 ]; then
+echo "proxies:" > "$veth_file"
+for IFACE in $OTHER_IFACES; do
+  [ "$IFACE" = "$FIRST_IFACE" ] && continue
+  SRC_IP=$(ip -o -4 addr show dev "$IFACE" | awk '{sub(/\/.*/,"",$4);print $4}')
+  [ -z "$SRC_IP" ] && continue
+
+  cat >> "$veth_file" <<EOF
+- name: $IFACE
+  type: direct
+  ip-version: ipv4
+  interface-name: $IFACE
+EOF
+
+  TABLE=$((TABLE_BASE + i))
+  ip rule show | grep -q "from $SRC_IP lookup $TABLE" || \
+    ip rule add from "$SRC_IP" table "$TABLE"
+  # задать шлюзом интерфейса VETH соседний контейнер в той же подсети, если задана переменная
+  # нормализуем имя интерфейса и IP для поиска переменной
+  SAFE_IFACE=$(echo "$IFACE" | tr '-' '_')
+  SAFE_IP=$(echo "$SRC_IP" | tr '.' '_')
+  VAR_GATEWAY_IP="GATEWAY_${SAFE_IP}"
+  VAR_GATEWAY_IFACE="GATEWAY_${SAFE_IFACE}"
+  # сначала проверяем gateway по IP
+  if printenv "$VAR_GATEWAY_IP" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IP"); \
+    # потом по интерфейсу
+    elif printenv "$VAR_GATEWAY_IFACE" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IFACE"); \
+    # fallback
+    else GATEWAY_VETH="$GATEWAY"; \
+  fi
+  ip route replace default via "$GATEWAY_VETH" dev "$IFACE" table "$TABLE"
+  i=$((i+1))
+done
+add_provider "VETH" "file" "$veth_file"
+fi
+fi
+
+# правила nft для настройки tproxy
+nft_rules() {
+  TPROXY_PORT=15123
+  TPROXY_MARK=0x123
+  TPROXY_TABLE=100
+
+ # --- nftables table ---
+  nft add table inet tproxy_ci
+
+  # --- divert chain для ускорения TCP ---
+  nft "add chain inet tproxy_ci divert {
+    type filter hook prerouting priority mangle - 5;
+    policy accept;
+  }"
+
+  # --- socket transparent (ускоряет established TCP) ---
+  nft add rule inet tproxy_ci divert \
+    meta l4proto tcp socket transparent 1 \
+    meta mark set $TPROXY_MARK \
+    accept
+
+  # --- prerouting (mangle, но не слишком рано) ---
+  nft "add chain inet tproxy_ci prerouting {
+    type filter hook prerouting priority mangle;
+    policy accept;
+  }"
+
+  # --- исключаем все локальные сервисы и служебные адреса ---
+  if ! nft add rule inet tproxy_ci prerouting fib daddr type { local, broadcast, multicast } return 2>/dev/null; then
+    # for ros < 7.22
+    nft add rule inet tproxy_ci prerouting ip daddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255, $LOCAL_IPS } return
+  fi
+
+  # --- защита от MPTCP ---
+  nft add rule inet tproxy_ci prerouting tcp option mptcp exists drop
+
+  # --- TPROXY ---
+  nft add rule inet tproxy_ci prerouting \
+    iifname \""$FIRST_IFACE"\" \
+    meta l4proto { tcp, udp } \
+    meta mark set $TPROXY_MARK \
+    tproxy ip to 127.0.0.1:$TPROXY_PORT \
+    accept
+
+  # --- policy routing (БЕЗ iif — быстрее) ---
+  ip rule add fwmark $TPROXY_MARK lookup $TPROXY_TABLE pref 100
+  ip route replace local 0.0.0.0/0 dev lo table $TPROXY_TABLE proto static scope host
+}
+
+# если это шаблон, выполняем преднастройки
+if [ "${ENVSUBST:-1}" -eq 1 ]; then
+  # AUTO CONFIG tun-in
+if grep -Eq '^[[:space:]]*\$TUN_IN_AUTOCONFIG' "$CONFIG_FILE"; then
+  if [ "${TUN:-0}" -eq 1 ] || [ $NFT_CORE -eq 0 ]; then
+  TUN_IN_AUTOCONFIG=$(cat <<EOF
+  - name: tun-in
+    type: tun
+    stack: $TUN_STACK
+    auto-detect-interface: $TUN_AUTO_DETECT_INTERFACE
+    auto-route: $TUN_AUTO_ROUTE
+    auto-redirect: $TUN_AUTO_REDIRECT
+    inet4-address:
+    - $TUN_INET4_ADDRESS
+EOF
+)  
+else
+  nft_rules
+  TUN_IN_AUTOCONFIG=$(cat <<EOF
+  - name: tun-in
+    type: tproxy
+    port: $TPROXY_PORT
+    udp: true
+EOF
+)
+fi
+export TUN_IN_AUTOCONFIG
+fi
+# конец проверки шаблона
+fi
 
 # пользовательские sh-скрипты подключаются (source) и выполняются в текущем shell-процессе с общим окружением
 for script in "$USER_SH_DIR"/*.sh; do

@@ -1,0 +1,91 @@
+##### template blocks #####
+health-check-template: &health-check
+    enable: $HEALTH_CHECK_ENABLE
+    url: $HEALTH_CHECK_URL
+    interval: $HEALTH_CHECK_INTERVAL
+    timeout: $HEALTH_CHECK_TIMEOUT
+    lazy: $HEALTH_CHECK_LAZY
+    expected-status: $HEALTH_CHECK_EXPECTED_STATUS
+###########################
+external-controller: $EXTERNAL_CONTROLLER_ADDRESS:$UI_PORT
+external-ui: $EXTERNAL_UI_PATH
+external-ui-url: $EXTERNAL_UI_URL
+secret: $UI_SECRET
+unified-delay: $UNIFIED_DELAY
+log-level: $LOG_LEVEL
+ipv6: $IPV6
+find-process-mode: $FIND_PROCESS_MODE
+tcp-concurrent: $TCP_CONCURRENT
+keep-alive-idle: $KEEP_ALIVE_IDLE
+keep-alive-interval: $KEEP_ALIVE_INTERVAL
+
+profile:
+  store-selected: $STORE_SELECTED
+
+dns:
+  enable: $DNS_ENABLE
+  use-system-hosts: $DNS_USE_SYSTEM_HOSTS
+  listen: $DNS_LISTEN
+  cache-algorithm: $DNS_CACHE_ALGORITHM
+  prefer-h3: $DNS_PREFER_H3
+  enhanced-mode: $DNS_ENHANCED_MODE
+  fake-ip-range: $DNS_FAKE_IP_RANGE
+  fake-ip-ttl: $DNS_FAKE_IP_TTL
+  nameserver:
+  - system
+
+proxy-providers:
+$PROVIDERS_BLOCK
+
+proxy-groups:
+  - name: SELECTOR
+    type: select
+    proxies:
+      - AUTO
+      - FALLBACK
+      - MANUAL
+      - LOADBALANCE
+      - DIRECT
+  
+  - name: AUTO
+    type: url-test
+    use:
+$PROVIDERS_LIST
+    <<: *health-check
+    lazy: false
+
+  - name: FALLBACK
+    type: fallback
+    use:
+$PROVIDERS_LIST
+    <<: *health-check
+
+  - name: MANUAL
+    type: select
+    use:
+$PROVIDERS_LIST
+
+  - name: LOADBALANCE
+    type: load-balance
+    strategy: $LOADBALANCE_STRATEGY
+    use:
+$PROVIDERS_LIST
+    <<: *health-check
+
+  - name: QUIC UDP 443
+    type: select
+    proxies:
+      - PASS
+      - REJECT
+
+listeners:
+  - name: mixed-in
+    type: mixed
+    port: $MIXED_PORT
+$TUN_IN_AUTOCONFIG
+
+rules:
+  - AND,((NETWORK,udp),(DST-PORT,443)),QUIC UDP 443
+  - IN-NAME,tun-in,SELECTOR
+  - IN-NAME,mixed-in,SELECTOR
+  - MATCH,GLOBAL
