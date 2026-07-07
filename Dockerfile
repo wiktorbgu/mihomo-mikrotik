@@ -1,19 +1,19 @@
 FROM --platform=$BUILDPLATFORM alpine AS build
-ARG TARGETPLATFORM
-ARG TARGETARCH
-ARG TARGETOS
-ARG TARGETVARIANT
+ARG TARGETPLATFORM \
+    TARGETARCH \
+    TARGETOS \
+    TARGETVARIANT \
+    WITH_GVISOR=1
 
 # сборка mihomo с исправлениями загрузки битых ссылок в публичных подписках
 WORKDIR /src
-ARG WITH_GVISOR=1
 
 # инструменты для сборки
 RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make
 
-ENV GOCACHE=/var/cache/go-build
-ENV GOTMPDIR=/var/tmp/go-tmp
-ENV GOFLAGS="-modcacherw"
+ENV GOCACHE=/var/cache/go-build \
+    GOTMPDIR=/var/tmp/go-tmp \
+    GOFLAGS="-modcacherw"
 RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
 # Переключаемся на нужный тэг
@@ -63,49 +63,50 @@ FROM --platform=linux/arm/v5 debian:trixie-slim AS linux-armv5
 
 # FINAL IMAGE
 FROM ${TARGETOS}-${TARGETARCH}${TARGETVARIANT}
-ARG TARGETPLATFORM
-ARG TARGETARCH
-ARG TARGETOS
-ARG TARGETVARIANT
+ARG TARGETPLATFORM \
+    TARGETARCH \
+    TARGETOS \
+    TARGETVARIANT
 
 COPY --from=build /tmp/build/ /
 
 # DISABLE_NFTABLES нужна именно для михомо
-ENV DISABLE_NFTABLES=1
-ENV CONFIG="default_config.yaml"
-ENV WORKDIR="/etc/mihomo"
-ENV HEALTH_CHECK_ENABLE="true"
-ENV HEALTH_CHECK_URL="https://www.gstatic.com/generate_204"
-ENV HEALTH_CHECK_INTERVAL=300
-ENV HEALTH_CHECK_TIMEOUT=5000
-ENV HEALTH_CHECK_LAZY="true"
-ENV HEALTH_CHECK_EXPECTED_STATUS=204
-ENV MIXED_PORT=1080
-ENV UI_PORT=9090
-ENV EXTERNAL_CONTROLLER_ADDRESS="0.0.0.0"
-ENV TUN_STACK="system"
-ENV TUN_INET4_ADDRESS="198.19.0.1/30"
-ENV TUN_AUTO_REDIRECT="true"
-ENV TUN_AUTO_DETECT_INTERFACE="true"
-ENV TUN_AUTO_ROUTE="true"
-ENV EXTERNAL_UI_PATH="ui"
-ENV IPV6="true"
-ENV PROVIDER_INTERVAL=3600
-ENV DNS_ENABLE="true"
-ENV DNS_USE_SYSTEM_HOSTS="true"
-ENV DNS_CACHE_ALGORITHM="arc"
-ENV DNS_PREFER_H3="false"
-ENV DNS_LISTEN="0.0.0.0:53"
-ENV DNS_ENHANCED_MODE="fake-ip"
-ENV DNS_FAKE_IP_RANGE="198.18.0.0/15"
-ENV DNS_FAKE_IP_TTL=1
-ENV TCP_CONCURRENT="true"
-ENV KEEP_ALIVE_IDLE=60
-ENV KEEP_ALIVE_INTERVAL=30
-ENV FIND_PROCESS_MODE="off"
-ENV STORE_SELECTED="true"
-ENV UNIFIED_DELAY="true"
-ENV LOADBALANCE_STRATEGY="consistent-hashing"
+ENV DISABLE_NFTABLES=1 \
+    CONFIG="default_config.yaml" \
+    WORKDIR="/etc/mihomo" \
+    HEALTH_CHECK_ENABLE="true" \
+    HEALTH_CHECK_URL="https://www.gstatic.com/generate_204" \
+    HEALTH_CHECK_INTERVAL=300 \
+    HEALTH_CHECK_TIMEOUT=5000 \
+    HEALTH_CHECK_LAZY="true" \
+    HEALTH_CHECK_EXPECTED_STATUS=204 \
+    MIXED_PORT=1080 \
+    UI_PORT=9090 \
+    EXTERNAL_CONTROLLER_ADDRESS="0.0.0.0" \
+    TUN_STACK="system" \
+    TUN_INET4_ADDRESS="198.19.0.1/30" \
+    TUN_AUTO_REDIRECT="true" \
+    TUN_AUTO_DETECT_INTERFACE="true" \
+    TUN_AUTO_ROUTE="true" \
+    TUN_DISABLE_ICMP_FORWARDING="true" \
+    EXTERNAL_UI_PATH="ui" \
+    IPV6="true" \
+    PROVIDER_INTERVAL=3600 \
+    DNS_ENABLE="true" \
+    DNS_USE_SYSTEM_HOSTS="true" \
+    DNS_CACHE_ALGORITHM="arc" \
+    DNS_PREFER_H3="false" \
+    DNS_LISTEN="0.0.0.0:53" \
+    DNS_ENHANCED_MODE="fake-ip" \
+    DNS_FAKE_IP_RANGE="198.18.0.0/15" \
+    DNS_FAKE_IP_TTL=1 \
+    TCP_CONCURRENT="true" \
+    KEEP_ALIVE_IDLE=60 \
+    KEEP_ALIVE_INTERVAL=30 \
+    FIND_PROCESS_MODE="off" \
+    STORE_SELECTED="true" \
+    UNIFIED_DELAY="true" \
+    LOADBALANCE_STRATEGY="consistent-hashing"
 
 RUN case "$TARGETPLATFORM" in \
         "linux/arm/v5") \
@@ -126,10 +127,10 @@ RUN case "$TARGETPLATFORM" in \
             ln -s /usr/sbin/ip6tables-legacy-save /usr/sbin/ip6tables-save && \
             ln -s /usr/sbin/ip6tables-legacy-restore /usr/sbin/ip6tables-restore;; \
         linux/arm/v7) \
-            apk add --no-cache envsubst && \
+            apk add --no-cache envsubst ca-certificates && \
             rm -vrf /var/cache/apk/* ;; \
         linux/amd64 | linux/arm64) \
-            apk add --no-cache envsubst && \
+            apk add --no-cache envsubst ca-certificates && \
             rm -vrf /var/cache/apk/* ;; \
         *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
     esac && \

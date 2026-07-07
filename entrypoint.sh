@@ -10,8 +10,8 @@ fi
 lsmod | grep -q '^nf_tables' && NFT_CORE=1 || NFT_CORE=0
 
 if [ "$OS" = "alpine" ]; then
-  # если в системе нет модуля nftables
-  if [ $NFT_CORE -eq 0 ]; then
+  # если в системе нет модуля nftables или принудительно хотим использовать iptables
+  if [ "${IPTABLES:-0}" -eq 1 ] || [ $NFT_CORE -eq 0 ]; then
       # удалить nftables если есть
       apk info -e nftables >/dev/null 2>&1 && apk del nftables >/dev/null 2>&1
       # установить iptables если отсутствуют
@@ -43,7 +43,7 @@ if [ "$OS" = "alpine" ]; then
 fi
 
 # настроить маскарад
-if [ $NFT_CORE -eq 1 ]; then
+if [ "${IPTABLES:-0}" -eq 0 ] && [ $NFT_CORE -eq 1 ]; then
   nft add table ip nat
   nft add chain ip nat postrouting { type nat hook postrouting priority srcnat \; }
   nft add rule ip nat postrouting meta oiftype ether ip daddr != { 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255} masquerade
@@ -110,7 +110,7 @@ else
     ENVSUBST=0
   else
     # нет ни шаблона, ни кастомного конфига
-    echo "ERROR: Config not found! Checked: $TEMPLATE_FILE and $WORKDIR/$CONFIG"
+    echo "ERROR: Config not found! Checked: $TEMPLATE_FILE and $WORKDIR/$CONFIG. Check container mounts/volume paths."
     exit 1
   fi
 fi    
@@ -484,6 +484,9 @@ if grep -Eq '^[[:space:]]*\$TUN_IN_AUTOCONFIG' "$CONFIG_FILE"; then
     auto-redirect: $TUN_AUTO_REDIRECT
     inet4-address:
     - $TUN_INET4_ADDRESS
+    dns-hijack:
+    - any:53
+    disable-icmp-forwarding: $TUN_DISABLE_ICMP_FORWARDING
 EOF
 )  
 else
