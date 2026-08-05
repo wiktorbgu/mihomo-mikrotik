@@ -465,9 +465,24 @@ nft_rules() {
     tproxy ip to 127.0.0.1:$TPROXY_PORT \
     accept
 
-  # --- policy routing (БЕЗ iif — быстрее) ---
+  # --- policy routing ---
   ip rule add fwmark $TPROXY_MARK lookup $TPROXY_TABLE pref 100
   ip route replace local 0.0.0.0/0 dev lo table $TPROXY_TABLE proto static scope host
+
+  # если ядро без IPv6 — просто пропускаем
+  [ -f /proc/net/if_inet6 ] || return 0
+
+  # --- TPROXY IPv6 ---
+  nft add rule inet tproxy_ci prerouting \
+      iifname \""$FIRST_IFACE"\" \
+      meta l4proto { tcp, udp } \
+      meta mark set $TPROXY_MARK \
+      tproxy ip6 to [::1]:$TPROXY_PORT \
+      accept
+
+  # --- policy routing IPv6 ---
+  ip -6 rule add fwmark $TPROXY_MARK lookup $TPROXY_TABLE pref 100
+  ip -6 route replace local ::/0 dev lo table $TPROXY_TABLE
 }
 
 # если это шаблон, выполняем преднастройки
