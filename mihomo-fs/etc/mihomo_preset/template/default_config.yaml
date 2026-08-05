@@ -53,6 +53,7 @@ proxy-groups:
 $PROVIDERS_LIST
     <<: *health-check
     lazy: false
+    tolerance: $TOLERANCE
 
   - name: FALLBACK
     type: fallback

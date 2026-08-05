@@ -17,20 +17,29 @@ ENV GOCACHE=/var/cache/go-build \
 RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
 # Переключаемся на нужный тэг
-RUN git clone https://github.com/MetaCubeX/mihomo.git /src && \
-    JSON="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)" && \
+RUN JSON="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)" && \
     TAG="$(echo "$JSON" | jq -r .tag_name)" && \
-    git fetch --all --tags --prune && git switch --detach "$TAG" 2>/dev/null || git switch "$TAG" && \
+    git clone --depth=1 --branch "$TAG" --single-branch https://github.com/MetaCubeX/mihomo.git /src && \
+    git switch --detach "$TAG" && \
     BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
     echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
     sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \
     sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
 
 RUN sed -i '/^import (/a\    "github.com/metacubex/mihomo/log"' \
+    adapter/provider/provider.go && \
+    sed -i 's@return nil, fmt.Errorf("proxy %d error: %w", idx, err)@name, _ := mapping["name"].(string)\n                log.Warnln("[Provider %s] skip invalid proxy (idx=%d, name=%q): %v", pdName, idx, name, err)\n                continue@g' \
     adapter/provider/provider.go
 
-RUN sed -i 's@return nil, fmt.Errorf("proxy %d error: %w", idx, err)@name, _ := mapping["name"].(string)\n                log.Warnln("[Provider %s] skip invalid proxy (idx=%d, name=%q): %v", pdName, idx, name, err)\n                continue@g' \
-    adapter/provider/provider.go
+RUN sed -i \
+    -e 's/hello\.SessionId\[0\] = 1/hello.SessionId[0] = 26/' \
+    -e 's/hello\.SessionId\[1\] = 8/hello.SessionId[1] = 3/' \
+    -e 's/hello\.SessionId\[2\] = 2/hello.SessionId[2] = 27/' \
+    component/tls/reality.go && \
+    grep -Fq 'hello.SessionId[0] = 26' component/tls/reality.go && \
+    grep -Fq 'hello.SessionId[1] = 3' component/tls/reality.go && \
+    grep -Fq 'hello.SessionId[2] = 27' component/tls/reality.go || \
+    { echo "patch did not apply: reality minClientVer (component/tls/reality.go)" >&2; exit 1; }
   
 # Сборка mihomo для целевой архитектуры
 RUN echo "Building for $TARGETARCH $TARGETVARIANT" && \
