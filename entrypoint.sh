@@ -442,19 +442,34 @@ ${interval_block}    health-check:
 
 ### SRV
 srv_file="$WORKDIR/srv.yaml"
+srv_file_has_content=0
 if env | grep -qE '^SRV[0-9]'; then
     > "$srv_file"
     while IFS='=' read -r name value; do
         case "$name" in
             SRV[0-9]*)
-                echo "#== $name ==" >> "$srv_file"
-                printf "%s\n" "$value" >> "$srv_file"
+                # Если SRV содержит http(s)-ссылку, автоматически принимаем её как subscription — так же, как SUB1/SUB2/...
+                case "$value" in
+                    http://*|https://*)
+                        add_provider "$name" "http" "$value" true
+                        ;;
+                    *)
+                        # а иначе обрабатываем как обычную uri ссылку прокси
+                        echo "#== $name ==" >> "$srv_file"
+                        printf "%s\n" "$value" >> "$srv_file"
+                        srv_file_has_content=1
+                        ;;
+                esac
                 ;;
         esac
     done <<EOF
 $(env)
 EOF
-    add_provider "SRV" "file" "$srv_file"
+
+    # Если были обычные (не URL подписок) SRV-записи — подключаем их как file provider
+    if [ "$srv_file_has_content" -eq 1 ]; then
+        add_provider "SRV" "file" "$srv_file"
+    fi
 fi
 
 ### AWG
@@ -480,51 +495,68 @@ EOF
 
 ### VETH
 if [ -n "$OTHER_IFACES" ]; then
-TABLE_BASE=200
-i=0
-veth_file="$WORKDIR/veth.yaml"
-IFACE_COUNT=$(echo "$OTHER_IFACES" | wc -w)
+  # Для дополнительных VETH используем модель multi-WAN Mihomo:
+  # отдельная таблица маршрутизации + fwmark, который выставляет сам direct proxy.
+  # Это корректно работает для UDP при interface-name.
+  TABLE_BASE=201
+  i=0
+  veth_file="$WORKDIR/veth.yaml"
+  IFACE_COUNT=$(echo "$OTHER_IFACES" | wc -w)
 
-# если нет ни серверов ни конфигов awg ни дополнительных veth — добавляем единственный DIRECT
+  # если нет ни серверов ни конфигов awg ни дополнительных veth — добавляем единственный DIRECT
   if [ -z "$PROVIDERS_LIST" ] && [ "$IFACE_COUNT" -eq 1 ]; then
-PROVIDERS_LIST="${PROVIDERS_LIST}    proxies:
+    PROVIDERS_LIST="${PROVIDERS_LIST}    proxies:
       - DIRECT"
-# либо добавляем все остальные veth как прокси
-elif [ "$IFACE_COUNT" -gt 1 ]; then
-echo "proxies:" > "$veth_file"
-for IFACE in $OTHER_IFACES; do
-  [ "$IFACE" = "$FIRST_IFACE" ] && continue
-  SRC_IP=$(ip -o -4 addr show dev "$IFACE" | awk '{sub(/\/.*/,"",$4);print $4}')
-  [ -z "$SRC_IP" ] && continue
+  # либо добавляем все остальные veth как прокси
+  elif [ "$IFACE_COUNT" -gt 1 ]; then
+    echo "proxies:" > "$veth_file"
+    for IFACE in $OTHER_IFACES; do
+      [ "$IFACE" = "$FIRST_IFACE" ] && continue
 
-  cat >> "$veth_file" <<EOF
+      SRC_CIDR=$(ip -o -4 addr show dev "$IFACE" | awk 'NR==1 {print $4}')
+      SRC_IP=${SRC_CIDR%%/*}
+      [ -z "$SRC_IP" ] && continue
+
+      TABLE=$((TABLE_BASE + i))
+      MARK=$TABLE
+      RULE_PREF=$((150 + i))
+      MARK_HEX=$(printf '0x%x' "$MARK")
+
+      cat >> "$veth_file" <<EOF
 - name: $IFACE
   type: direct
   ip-version: $IP_VERSION
   interface-name: $IFACE
+  routing-mark: $MARK
 EOF
 
-  TABLE=$((TABLE_BASE + i))
-  ip rule show | grep -q "from $SRC_IP lookup $TABLE" || \
-    ip rule add from "$SRC_IP" table "$TABLE"
-  # задать шлюзом интерфейса VETH соседний контейнер в той же подсети, если задана переменная
-  # нормализуем имя интерфейса и IP для поиска переменной
-  SAFE_IFACE=$(echo "$IFACE" | tr '-' '_')
-  SAFE_IP=$(echo "$SRC_IP" | tr '.' '_')
-  VAR_GATEWAY_IP="GATEWAY_${SAFE_IP}"
-  VAR_GATEWAY_IFACE="GATEWAY_${SAFE_IFACE}"
-  # сначала проверяем gateway по IP
-  if printenv "$VAR_GATEWAY_IP" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IP"); \
-    # потом по интерфейсу
-    elif printenv "$VAR_GATEWAY_IFACE" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IFACE"); \
-    # fallback
-    else GATEWAY_VETH="$GATEWAY"; \
+      # Policy routing по mark: именно эту схему использует Mihomo для multi-VETH.
+      if ! ip rule show | grep -q "fwmark $MARK_HEX lookup $TABLE"; then
+        ip rule add fwmark "$MARK" table "$TABLE" pref "$RULE_PREF"
+      fi
+
+      # В таблице обязательно должен быть connected route, иначе gateway может некорректно резолвиться/обрабатываться для отдельного policy table.
+      ip route replace "$SRC_CIDR" dev "$IFACE" src "$SRC_IP" table "$TABLE"
+
+      # задать шлюзом интерфейса VETH соседний контейнер в той же подсети, если задана переменная
+      # нормализуем имя интерфейса и IP для поиска переменной
+      SAFE_IFACE=$(echo "$IFACE" | tr '-' '_')
+      SAFE_IP=$(echo "$SRC_IP" | tr '.' '_')
+      VAR_GATEWAY_IP="GATEWAY_${SAFE_IP}"
+      VAR_GATEWAY_IFACE="GATEWAY_${SAFE_IFACE}"
+      # сначала проверяем gateway по IP
+      if printenv "$VAR_GATEWAY_IP" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IP"); \
+        # потом по интерфейсу
+        elif printenv "$VAR_GATEWAY_IFACE" >/dev/null; then GATEWAY_VETH=$(printenv "$VAR_GATEWAY_IFACE"); \
+        # fallback
+        else GATEWAY_VETH="$GATEWAY"; \
+      fi
+      ip route replace default via "$GATEWAY_VETH" dev "$IFACE" table "$TABLE"
+
+      i=$((i+1))
+    done
+    add_provider "VETH" "file" "$veth_file"
   fi
-  ip route replace default via "$GATEWAY_VETH" dev "$IFACE" table "$TABLE"
-  i=$((i+1))
-done
-add_provider "VETH" "file" "$veth_file"
-fi
 fi
 
 # правила nft для настройки tproxy
