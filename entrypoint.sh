@@ -513,8 +513,13 @@ if [ -n "$OTHER_IFACES" ]; then
     for IFACE in $OTHER_IFACES; do
       [ "$IFACE" = "$FIRST_IFACE" ] && continue
 
-      SRC_CIDR=$(ip -o -4 addr show dev "$IFACE" | awk 'NR==1 {print $4}')
-      SRC_IP=${SRC_CIDR%%/*}
+      SRC_CIDR=$(ip route show dev "$IFACE" scope link | awk 'NR==1 {print $1}')
+      SRC_IP=$(ip -o -4 addr show dev "$IFACE" | awk 'NR==1 {
+          split($4,a,"/")
+          print a[1]
+      }')
+
+      [ -z "$SRC_CIDR" ] && continue
       [ -z "$SRC_IP" ] && continue
 
       TABLE=$((TABLE_BASE + i))
