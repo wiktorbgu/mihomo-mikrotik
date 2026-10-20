@@ -31,6 +31,10 @@ RUN sed -i '/^import (/a\    "github.com/metacubex/mihomo/log"' \
     sed -i 's@return nil, fmt.Errorf("proxy %d error: %w", idx, err)@name, _ := mapping["name"].(string)\n                log.Warnln("[Provider %s] skip invalid proxy (idx=%d, name=%q): %v", pdName, idx, name, err)\n                continue@g' \
     adapter/provider/provider.go
 
+RUN curl -fsSL https://github.com/MetaCubeX/mihomo/pull/3326.patch | git apply && \
+    grep -q 'BuildAddedX25519MLKEM768HandshakeState' component/tls/utls.go || \
+    { echo "patch did not apply: PR #3326" >&2; exit 1; }
+
 RUN sed -i \
     -e 's/hello\.SessionId\[0\] = 1/hello.SessionId[0] = 26/' \
     -e 's/hello\.SessionId\[1\] = 8/hello.SessionId[1] = 3/' \

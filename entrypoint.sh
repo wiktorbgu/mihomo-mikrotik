@@ -398,42 +398,84 @@ read_cfg() {
 PROVIDERS_BLOCK=""
 PROVIDERS_LIST=""
 
+set_default_var() {
+    local name="$1"
+    local var="$2"
+    local value
+
+    value="$(printenv "${var}_${name}")"
+    [ -z "$value" ] && value="$(printenv "$var")"
+
+    printf '%s' "$value"
+}
+
 add_provider() {
     local name="$1"
     local type="$2"        # file / http
     local source="$3"      # path / url
-    local add_header="${4:-false}"
 
-    local header=""
-    local interval_block=""
+    # default
     local source_key="path"
+    local sub_params=""
 
-    # какой ключ использовать
-    [[ "$type" == "http" ]] && source_key="url"
+    # параметры только для http-провайдеров
+    if [[ "$type" == "http" ]]; then
+        source_key="url"
+        local filter="$(set_default_var "$name" "PROVIDER_FILTER")"
+        local exclude_filter="$(set_default_var "$name" "PROVIDER_EXCLUDE_FILTER")"
+        local exclude_type="$(set_default_var "$name" "PROVIDER_EXCLUDE_TYPE")"
+        local provider_interval="$(set_default_var "$name" "PROVIDER_INTERVAL")"
 
-    # header только для SUB*
-    if [[ "$add_header" == "true" && "$name" != "AWG" && "$name" != "SRV" ]]; then
-        header="
+        sub_params="
+    interval: ${provider_interval}
     header:
       x-hwid:
       - $HWID"
+
+    [ -n "$filter" ] && sub_params="${sub_params}"$'\n'"    filter: \"${filter}\""
+    [ -n "$exclude_filter" ] && sub_params="${sub_params}"$'\n'"    exclude-filter: \"${exclude_filter}\""
+    [ -n "$exclude_type" ] && sub_params="${sub_params}"$'\n'"    exclude-type: \"${exclude_type}\""
     fi
 
-    # interval только для http
-    if [[ "$type" == "http" ]]; then
-        interval_block="    interval: ${PROVIDER_INTERVAL}"$'\n'
-    fi
+    # индивидуальный override для провайдера
+    local override=""
+    local value
+    local param
+    local var
+
+    for param in tfo mptcp udp udp-over-tcp down up skip-cert-verify name-cert-verify dialer-proxy additional-prefix additional-suffix; do
+        var="PROVIDER_$(printf '%s' "$param" | tr '[:lower:]-' '[:upper:]_')_${name}"
+        value="$(printenv "$var")"
+        [ -n "$value" ] || continue
+
+        case "$param" in
+            # boolean параметры без кавычек
+            tfo|mptcp|udp|udp-over-tcp|skip-cert-verify)
+                override="${override}"$'\n'"      ${param}: ${value}" ;;
+            *)
+                override="${override}"$'\n'"      ${param}: \"${value}\"" ;;
+        esac
+    done
+
+    [ -n "$override" ] && sub_params="${sub_params}"$'\n'"    override:"$override""
+
+    local health_check_enable="$(set_default_var "$name" "HEALTH_CHECK_ENABLE")"
+    local health_check_url="$(set_default_var "$name" "HEALTH_CHECK_URL")"
+    local health_check_interval="$(set_default_var "$name" "HEALTH_CHECK_INTERVAL")"
+    local health_check_timeout="$(set_default_var "$name" "HEALTH_CHECK_TIMEOUT")"
+    local health_check_lazy="$(set_default_var "$name" "HEALTH_CHECK_LAZY")"
+    local health_check_expected_status="$(set_default_var "$name" "HEALTH_CHECK_EXPECTED_STATUS")"
 
     PROVIDERS_BLOCK="${PROVIDERS_BLOCK}  ${name}:
     type: ${type}
-    ${source_key}: \"${source}\"
-${interval_block}    health-check:
-      enable: ${HEALTH_CHECK_ENABLE}
-      url: ${HEALTH_CHECK_URL}
-      interval: ${HEALTH_CHECK_INTERVAL}
-      timeout: ${HEALTH_CHECK_TIMEOUT}
-      lazy: ${HEALTH_CHECK_LAZY}
-      expected-status: ${HEALTH_CHECK_EXPECTED_STATUS}${header}
+    ${source_key}: \"${source}\"${sub_params}
+    health-check:
+      enable: ${health_check_enable}
+      url: ${health_check_url}
+      interval: ${health_check_interval}
+      timeout: ${health_check_timeout}
+      lazy: ${health_check_lazy}
+      expected-status: ${health_check_expected_status}
 "
 
     PROVIDERS_LIST="${PROVIDERS_LIST}      - ${name}"$'\n'
@@ -451,7 +493,7 @@ if env | grep -qE '^SRV[0-9]'; then
                 # Если SRV содержит http(s)-ссылку, автоматически принимаем её как subscription — так же, как SUB1/SUB2/...
                 case "$value" in
                     http://*|https://*)
-                        add_provider "$name" "http" "$value" true
+                        add_provider "$name" "http" "$value"
                         ;;
                     *)
                         # а иначе обрабатываем как обычную uri ссылку прокси
@@ -486,7 +528,7 @@ fi
 while IFS='=' read -r name value; do
     case "$name" in
         SUB[0-9]*)
-            add_provider "$name" "http" "$value" true
+            add_provider "$name" "http" "$value"
             ;;
     esac
 done <<EOF
