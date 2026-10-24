@@ -425,12 +425,40 @@ add_provider() {
         local exclude_filter="$(set_default_var "$name" "PROVIDER_EXCLUDE_FILTER")"
         local exclude_type="$(set_default_var "$name" "PROVIDER_EXCLUDE_TYPE")"
         local provider_interval="$(set_default_var "$name" "PROVIDER_INTERVAL")"
+        local headers_raw="$(set_default_var "$name" "PROVIDER_HEADER")"
+
+        local custom_headers=""
+        if [ -n "$headers_raw" ]; then
+            headers_raw=$(printf '%s' "$headers_raw" | tr '#' '|')
+            OLDIFS=$IFS; IFS='|'
+            for pair in $headers_raw; do
+                [ -z "$pair" ] && continue
+                case "$pair" in
+                    *=*) h_key="${pair%%=*}"; h_val="${pair#*=}" ;;
+                    *:*) h_key="${pair%%:*}"; h_val="${pair#*:}" ;;
+                    *) continue ;;
+                esac
+                # Очищаем пробелы по краям (так что можно писать с пробелами вокруг |)
+                h_key=$(printf '%s' "$h_key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                h_val=$(printf '%s' "$h_val" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//; s/"/\\"/g')
+                [ -n "$h_key" ] && [ -n "$h_val" ] && custom_headers="${custom_headers}
+      ${h_key}:
+      - \"${h_val}\""
+            done
+            IFS=$OLDIFS
+        fi
+
+        # Добавляем системный HWID только если пользователь не передал свой x-hwid
+        local hwid_header=""
+        if ! echo "$headers_raw" | grep -qi "x-hwid"; then
+            hwid_header="
+      x-hwid:
+      - $HWID"
+        fi
 
         sub_params="
     interval: ${provider_interval}
-    header:
-      x-hwid:
-      - $HWID"
+    header:${hwid_header}${custom_headers}"
 
     [ -n "$filter" ] && sub_params="${sub_params}"$'\n'"    filter: \"${filter}\""
     [ -n "$exclude_filter" ] && sub_params="${sub_params}"$'\n'"    exclude-filter: \"${exclude_filter}\""
