@@ -3,6 +3,7 @@ ARG TARGETPLATFORM \
     TARGETARCH \
     TARGETOS \
     TARGETVARIANT \
+    MIHOMO_VERSION \
     WITH_GVISOR=1
 
 # сборка mihomo с исправлениями загрузки битых ссылок в публичных подписках
@@ -17,10 +18,15 @@ ENV GOCACHE=/var/cache/go-build \
 RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
 # Переключаемся на нужный тэг
-RUN JSON="$(curl -fsSL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)" && \
-    TAG="$(echo "$JSON" | jq -r .tag_name)" && \
-    git clone --depth=1 --branch "$TAG" --single-branch https://github.com/MetaCubeX/mihomo.git /src && \
-    git switch --detach "$TAG" && \
+RUN set -eux; \
+    if [ -z "$MIHOMO_VERSION" ]; then \
+        MIHOMO_VERSION="$(curl -fsSL \
+            --retry 3 \
+            https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+            | jq -er '.tag_name')"; \
+    fi; \
+    test -n "$MIHOMO_VERSION"; \
+    git clone --depth=1 --branch "$MIHOMO_VERSION" --single-branch https://github.com/MetaCubeX/mihomo.git /src; \
     BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
     echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
     sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \

@@ -1,0 +1,154 @@
+
+name: Mihomo Docker Release
+
+on:
+  # Check for a new stable release once a day
+  schedule:
+    - cron: "17 5 * * *"
+
+  # Manual build
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Mihomo release tag (empty = latest)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: mihomo-docker-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish Docker images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Resolve Mihomo version
+        id: version
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -n "$MANUAL_VERSION" ]; then
+            VERSION="${MANUAL_VERSION#refs/tags/}"
+          else
+            VERSION=$(curl -fsSL \
+              --retry 3 \
+              --retry-delay 2 \
+              https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+              | jq -er '.tag_name')
+          fi
+
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "ERROR: Unable to resolve Mihomo release"
+            exit 1
+          fi
+
+          PREVIOUS=$(yq -r '.mihomo // ""' .github/versions.yml)
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || \
+             [ "$VERSION" != "$PREVIOUS" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "Current Mihomo release: $VERSION"
+          echo "Previous Mihomo release: ${PREVIOUS:-none}"
+
+      - name: Skip unchanged release
+        if: steps.version.outputs.build == 'false'
+        run: echo "No new Mihomo release. Nothing to build."
+
+      - name: Set up QEMU
+        if: steps.version.outputs.build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        if: steps.version.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: steps.version.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.version.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and publish
+        if: steps.version.outputs.build == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: |
+            linux/amd64
+            linux/arm64
+            linux/arm/v7
+            linux/arm/v5
+          build-args: |
+            MIHOMO_VERSION=${{ steps.version.outputs.version }}
+          push: true
+          tags: |
+            ghcr.io/wiktorbgu/mihomo-mikrotik:latest
+            ghcr.io/wiktorbgu/mihomo-mikrotik:${{ steps.version.outputs.version }}
+            docker.io/wiktorbgu/mihomo-mikrotik:latest
+            docker.io/wiktorbgu/mihomo-mikrotik:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save processed release
+        if: success() && steps.version.outputs.build == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p .github
+          touch .github/versions
+
+          if grep -q '^mihomo=' .github/versions; then
+            sed -i "s/^mihomo=.*/mihomo=$VERSION/" .github/versions
+          else
+            echo "mihomo=$VERSION" >> .github/versions
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add .github/versions
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update Mihomo version to $VERSION"
+            git push
+          fi
