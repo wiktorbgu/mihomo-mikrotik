@@ -4,7 +4,7 @@ name: Mihomo Docker Release
 on:
   # Check for a new stable Mihomo release once a day
   schedule:
-    - cron: "17 5 * * *"
+    - cron: "37 11 * * *"
 
   # Manual build
   workflow_dispatch:

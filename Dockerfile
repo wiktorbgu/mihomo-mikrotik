@@ -27,9 +27,9 @@ RUN set -eux; \
     fi; \
     test -n "$MIHOMO_VERSION"; \
     git clone --depth=1 --branch "$MIHOMO_VERSION" --single-branch https://github.com/MetaCubeX/mihomo.git /src; \
-    BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
-    echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
-    sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \
+    BUILDTIME="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"; \
+    echo "Updating version.go with TAG=${MIHOMO_VERSION} and BUILDTIME=${BUILDTIME}"; \
+    sed -i "s|Version\s*=.*|Version = \"${MIHOMO_VERSION}\"|" constant/version.go; \
     sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
 
 RUN sed -i '/^import (/a\    "github.com/metacubex/mihomo/log"' \
