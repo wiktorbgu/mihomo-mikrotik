@@ -2,7 +2,7 @@
 name: Mihomo Docker Release
 
 on:
-  # Check for a new stable release once a day
+  # Check for a new stable Mihomo release once a day
   schedule:
     - cron: "17 5 * * *"
 
@@ -33,12 +33,6 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Install yq
-        run: |
-          sudo wget -qO /usr/local/bin/yq \
-            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
-          sudo chmod +x /usr/local/bin/yq
-
       - name: Resolve Mihomo version
         id: version
         env:
@@ -55,15 +49,15 @@ jobs:
               --retry 3 \
               --retry-delay 2 \
               https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-              | jq -er '.tag_name')
+              | grep -oP '"tag_name":\s*"\K[^"]+')
           fi
 
-          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+          if [ -z "$VERSION" ]; then
             echo "ERROR: Unable to resolve Mihomo release"
             exit 1
           fi
 
-          PREVIOUS=$(yq -r '.mihomo // ""' .github/versions.yml)
+          PREVIOUS=$(sed -n 's/^mihomo=//p' .github/versions 2>/dev/null || true)
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
