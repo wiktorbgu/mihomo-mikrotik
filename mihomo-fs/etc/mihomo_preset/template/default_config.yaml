@@ -31,8 +31,12 @@ dns:
   enhanced-mode: $DNS_ENHANCED_MODE
   fake-ip-range: $DNS_FAKE_IP_RANGE
   fake-ip-ttl: $DNS_FAKE_IP_TTL
+  default-nameserver:
+  - "$DNS_DEFAULT_NAMESERVER"
+  proxy-server-nameserver:
+  - "$DNS_PROXY_SERVER_NAMESERVER"
   nameserver:
-  - system
+  - "$DNS_NAMESERVER"
 
 proxy-providers:
 $PROVIDERS_BLOCK
