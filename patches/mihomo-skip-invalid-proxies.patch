@@ -1,0 +1,41 @@
+--- a/adapter/provider/provider.go
++++ b/adapter/provider/provider.go
+@@ -18,6 +18,7 @@
+ 	"github.com/metacubex/mihomo/component/resource"
+ 	C "github.com/metacubex/mihomo/constant"
+ 	P "github.com/metacubex/mihomo/constant/provider"
++	"github.com/metacubex/mihomo/log"
+ 	"github.com/metacubex/mihomo/tunnel/statistic"
+ 
+ 	"github.com/dlclark/regexp2"
+@@ -395,6 +396,7 @@
+ 
+ 		proxies := []C.Proxy{}
+ 		proxiesSet := map[string]struct{}{}
++		invalidProxyIndexes := map[int]struct{}{}
+ 		for _, filterReg := range filterRegs {
+ 		LOOP1:
+ 			for idx, mapping := range schema.Proxies {
+@@ -448,7 +450,11 @@
+ 
+ 				proxy, err := adapter.ParseProxy(mapping, adapter.WithTunnelForAPI(tunnel), adapter.WithProviderName(pdName))
+ 				if err != nil {
+-					return nil, fmt.Errorf("proxy %d error: %w", idx, err)
++					if _, logged := invalidProxyIndexes[idx]; !logged {
++						invalidProxyIndexes[idx] = struct{}{}
++						log.Warnln("[Provider %s] skip invalid proxy (idx=%d, name=%q): %v", pdName, idx, name, err)
++					}
++					continue
+ 				}
+ 
+ 				proxiesSet[name] = struct{}{}
+@@ -460,6 +466,9 @@
+ 			if len(filter) > 0 {
+ 				return nil, errors.New("doesn't match any proxy, please check your filter")
+ 			}
++			if len(invalidProxyIndexes) > 0 {
++				return nil, fmt.Errorf("file doesn't have any usable proxy (skipped %d invalid proxy entries)", len(invalidProxyIndexes))
++			}
+ 			return nil, errors.New("file doesn't have any proxy")
+ 		}
+ 

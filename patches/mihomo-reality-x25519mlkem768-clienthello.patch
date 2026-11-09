@@ -1,0 +1,140 @@
+From 04653b5bcaec342a0573edb86a85e515869c88ce Mon Sep 17 00:00:00 2001
+From: Vyacheslav Shkulev <Vyacheslav.Shkulev@kaspersky.com>
+Date: Wed, 14 Oct 2026 21:55:00 +0300
+Subject: [PATCH] fix(tls): add X25519MLKEM768 key share to REALITY ClientHello
+
+Xray-core >= v26.9.8 (commit 8cdf7bf9c7) requires the ClientHello to
+carry an X25519MLKEM768 key share for REALITY authentication. Classical
+uTLS fingerprints (e.g. HelloFirefox_120) omit it, and the existing
+support-x25519mlkem768 flag only ever REMOVED the share (for old
+servers), so it was a no-op for new servers.
+
+The connection is now created with utls.HelloCustom (so
+BuildHandshakeState does not re-apply the original MLKEM-less preset
+spec) and BuildAddedX25519MLKEM768HandshakeState applies a fresh copy
+of the fingerprint spec (UTLSIdToSpec) with the curve and an
+empty-Data key share prepended BEFORE any plain X25519 entry (the
+xtls/reality server parser breaks on the first plain X25519 and
+rejects hellos where MLKEM768 comes after it). ApplyPreset generates
+the hybrid key pair (Data = MLKEM-768 encapsulation key || X25519
+public key, 1216 bytes) and fills State13.KeyShareKeys, which both the
+REALITY auth-key derivation (plain X25519 part) and the TLS 1.3
+handshake (hybrid part) read afterwards.
+
+Verified against live xray-core v26.7.28 and v26.10.10:
+  REALITY Authentication: true
+  is using X25519MLKEM768 for TLS' communication: true
+Flag=false path (BuildRemoved) and PQ fingerprints (already containing
+the share) are unchanged.
+---
+ component/tls/reality.go | 32 ++++++++++++++++++--------
+ component/tls/utls.go    | 49 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 72 insertions(+), 9 deletions(-)
+
+diff --git a/component/tls/reality.go b/component/tls/reality.go
+index ff6a0a3d70..411e547f3b 100644
+--- a/component/tls/reality.go
++++ b/component/tls/reality.go
+@@ -48,19 +48,33 @@ func GetRealityConn(ctx context.Context, conn net.Conn, fingerprint UClientHello
+ 			VerifyConnection:       verifier.VerifyConnection,
+ 		}
+ 
+-		uConn := utls.UClient(conn, uConfig, fingerprint)
+-		verifier.UConn = uConn
+-		err := uConn.BuildHandshakeState()
+-		if err != nil {
+-			return nil, err
++		// Xray-core >= v26.9.8 requires an X25519MLKEM768 key share in the
++		// ClientHello. uTLS only generates key share data inside ApplyPreset,
++		// which must run before the hello is built, so the connection is created
++		// with HelloCustom (its BuildHandshakeState does not re-apply the preset
++		// spec) and the MLKEM-augmented spec is applied in BuildAdded... below.
++		helloID := fingerprint
++		if realityConfig.SupportX25519MLKEM768 {
++			helloID = utls.HelloCustom
+ 		}
++		uConn := utls.UClient(conn, uConfig, helloID)
++		verifier.UConn = uConn
+ 
+-		if !realityConfig.SupportX25519MLKEM768 { // for X25519MLKEM768 does not work properly with the old reality server
+-			err = BuildRemovedX25519MLKEM768HandshakeState(uConn)
+-			if err != nil {
+-				return nil, err
++		var err error
++		if realityConfig.SupportX25519MLKEM768 {
++			// Classical fingerprints (e.g. HelloFirefox_120) do not include the
++			// required key share, so add it.
++			err = BuildAddedX25519MLKEM768HandshakeState(uConn, fingerprint)
++		} else {
++			// Old reality server: remove X25519MLKEM768 to avoid incompatibility.
++			err = uConn.BuildHandshakeState()
++			if err == nil {
++				err = BuildRemovedX25519MLKEM768HandshakeState(uConn)
+ 			}
+ 		}
++		if err != nil {
++			return nil, err
++		}
+ 
+ 		hello := uConn.HandshakeState.Hello
+ 		rawSessionID := hello.Raw[39 : 39+32] // the location of session ID
+diff --git a/component/tls/utls.go b/component/tls/utls.go
+index d48a1ba67f..7b6e2602d1 100644
+--- a/component/tls/utls.go
++++ b/component/tls/utls.go
+@@ -305,6 +305,55 @@ func BuildRemovedX25519MLKEM768HandshakeState(c *UConn) error {
+ 	return nil
+ }
+ 
++// BuildAddedX25519MLKEM768HandshakeState adds the X25519MLKEM768 hybrid key share
++// to the ClientHello when the fingerprint spec does not already include it.
++// Xray-core >= v26.9.8 requires the ClientHello to carry an X25519MLKEM768 key share
++// for REALITY authentication; classical fingerprints (e.g. HelloFirefox_120) omit it.
++// The curve and key share are inserted BEFORE any plain X25519 entry because the
++// server parser (xtls/reality) rejects hellos where X25519 appears first.
++//
++// Must be called on a UConn created with utls.HelloCustom BEFORE the first
++// BuildHandshakeState: uTLS generates key share data only inside ApplyPreset
++// (an entry appended to an already-built hello would keep empty Data and the
++// server would reject it with "tls: error decoding message"), and
++// BuildHandshakeState would otherwise re-apply the original MLKEM-less preset
++// spec for any non-custom ClientHelloID. UTLSIdToSpec returns a fresh spec on
++// every call, so modifying it does not affect other connections. ApplyPreset
++// also regenerates HandshakeState.Hello and State13.KeyShareKeys (including
++// Mlkem and MlkemEcdhe), which the REALITY auth-key derivation and the TLS 1.3
++// handshake both read afterwards.
++func BuildAddedX25519MLKEM768HandshakeState(c *UConn, fingerprint UClientHelloID) error {
++	spec, err := utls.UTLSIdToSpec(fingerprint)
++	if err != nil {
++		return err
++	}
++	for _, extension := range spec.Extensions {
++		if ce, ok := extension.(*utls.SupportedCurvesExtension); ok {
++			if !slices.Contains(ce.Curves, utls.X25519MLKEM768) {
++				ce.Curves = append([]utls.CurveID{utls.X25519MLKEM768}, ce.Curves...)
++			}
++		}
++		if ks, ok := extension.(*utls.KeyShareExtension); ok {
++			has := false
++			for _, share := range ks.KeyShares {
++				if share.Group == utls.X25519MLKEM768 {
++					has = true
++					break
++				}
++			}
++			if !has {
++				// Prepend so X25519MLKEM768 precedes any plain X25519 key share.
++				// Data is left empty: ApplyPreset generates the hybrid key pair.
++				ks.KeyShares = append([]utls.KeyShare{{Group: utls.X25519MLKEM768}}, ks.KeyShares...)
++			}
++		}
++	}
++	if err := c.ApplyPreset(&spec); err != nil {
++		return err
++	}
++	return c.BuildHandshakeState()
++}
++
+ func GetTLSConnectionState(conn net.Conn) (tlsState tls.ConnectionState) {
+ 	switch tlsConn := conn.(type) {
+ 	case interface{ ConnectionState() tls.ConnectionState }:

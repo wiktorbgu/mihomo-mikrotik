@@ -1,0 +1,148 @@
+--- a/component/resource/vehicle.go
++++ b/component/resource/vehicle.go
+@@ -3,9 +3,12 @@
+ import (
++	"bytes"
+ 	"context"
+ 	"errors"
++	"fmt"
+ 	"io"
+ 	"os"
++	"os/exec"
+ 	"path/filepath"
+ 	"time"
+ 
+ 	"github.com/metacubex/mihomo/common/utils"
+@@ -119,6 +122,52 @@
+ 	h.inRead = fn
+ }
+ 
++// hpwnrFallback fetches and converts a subscription only after Mihomo's native
++// path failed. hpwnr's stdout mode returns the complete converted response.
++func (h *HTTPVehicle) hpwnrFallback(parent context.Context, cause error) ([]byte, error) {
++	binary, lookErr := exec.LookPath("hpwnr")
++	if lookErr != nil {
++		return nil, fmt.Errorf("hpwnr unavailable: %w", lookErr)
++	}
++	ctx, cancel := context.WithTimeout(parent, h.timeout)
++	defer cancel()
++
++	args := []string{h.url}
++	for key, values := range h.header {
++		for _, value := range values {
++			args = append(args, "header", key, value)
++		}
++	}
++	args = append(args, "uri", "stdout")
++	cmd := exec.CommandContext(ctx, binary, args...)
++	var stderr bytes.Buffer
++	cmd.Stderr = &stderr
++	out, runErr := cmd.Output()
++	stderrText := bytes.TrimSpace(stderr.Bytes())
++	if len(stderrText) > 2048 {
++		stderrText = stderrText[:2048]
++	}
++	if runErr != nil {
++		if len(stderrText) > 0 {
++			return nil, fmt.Errorf("hpwnr failed after %v: %w; stderr: %s", cause, runErr, stderrText)
++		}
++		return nil, fmt.Errorf("hpwnr failed after %v: %w", cause, runErr)
++	}
++	out = bytes.TrimSpace(out)
++	if len(out) == 0 {
++		if len(stderrText) > 0 {
++			return nil, fmt.Errorf("hpwnr returned empty stdout after %v; stderr: %s", cause, stderrText)
++		}
++		return nil, fmt.Errorf("hpwnr returned empty stdout after %v", cause)
++	}
++	return out, nil
++}
++
++// Fallback implements the parser-error fallback used by Fetcher.
++func (h *HTTPVehicle) Fallback(cause error) ([]byte, error) {
++	return h.hpwnrFallback(context.Background(), cause)
++}
++
+ func (h *HTTPVehicle) Read(ctx context.Context, oldHash utils.HashType) (buf []byte, hash utils.HashType, err error) {
+ 	ctx, cancel := context.WithTimeout(ctx, h.timeout)
+ 	defer cancel()
+@@ -138,6 +177,10 @@
+ 	}
+ 	resp, err := mihomoHttp.HttpRequest(ctx, h.url, http.MethodGet, header, nil, mihomoHttp.WithSpecialProxy(h.proxy))
+ 	if err != nil {
++		buf, err = h.hpwnrFallback(ctx, err)
++		if err == nil {
++			hash = utils.MakeHash(buf)
++		}
+ 		return
+ 	}
+ 	defer resp.Body.Close()
+@@ -150,7 +193,11 @@
+ 		if setIfNoneMatch && resp.StatusCode == http.StatusNotModified {
+ 			return nil, oldHash, nil
+ 		}
+-		err = errors.New(resp.Status)
++		cause := errors.New(resp.Status)
++		buf, err = h.hpwnrFallback(ctx, cause)
++		if err == nil {
++			hash = utils.MakeHash(buf)
++		}
+ 		return
+ 	}
+ 	var reader io.Reader = resp.Body
+@@ -159,6 +206,14 @@
+ 	}
+ 	buf, err = io.ReadAll(reader)
+ 	if err != nil {
++		buf, err = h.hpwnrFallback(ctx, err)
++		if err == nil {
++			hash = utils.MakeHash(buf)
++		}
+ 		return
+ 	}
++	if len(bytes.TrimSpace(buf)) == 0 {
++		err = fmt.Errorf("subscription response is empty or whitespace-only (%d bytes)", len(buf))
++		return
++	}
+ 	hash = utils.MakeHash(buf)
+--- a/component/resource/fetcher.go
++++ b/component/resource/fetcher.go
+@@ -2,6 +2,7 @@
+ 
+ import (
+ 	"context"
++	"fmt"
+ 	"io"
+ 	"io/fs"
+ 	"os"
+@@ -146,8 +147,28 @@
+ 
+ 	contents, err := f.parser(buf)
+ 	if err != nil {
+-		f.backoff.AddAttempt() // add a failed attempt to backoff
+-		return lo.Empty[V](), false, err
++		// HTTP subscriptions get one transparent hpwnr retry after native parsing
++		// fails. Other vehicle types and installations without hpwnr are unchanged.
++		if fallback, ok := f.vehicle.(interface {
++			Fallback(error) ([]byte, error)
++		}); ok && f.vehicle.Type() == P.HTTP {
++			if fallbackBuf, fallbackErr := fallback.Fallback(err); fallbackErr == nil {
++				if fallbackContents, parseErr := f.parser(fallbackBuf); parseErr == nil {
++					buf = fallbackBuf
++					hash = utils.MakeHash(buf)
++					contents = fallbackContents
++					err = nil
++				} else {
++					err = fmt.Errorf("native parser: %v; hpwnr parser: %w", err, parseErr)
++				}
++			} else {
++				err = fmt.Errorf("native parser: %v; hpwnr fallback: %w", err, fallbackErr)
++			}
++		}
++		if err != nil {
++			f.backoff.AddAttempt() // add a failed attempt to backoff
++			return lo.Empty[V](), false, err
++		}
+ 	}
+ 	f.backoff.Reset() // no error, reset backoff
+ 
