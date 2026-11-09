@@ -1,4 +1,3 @@
-
 name: Mihomo Docker Release
 
 on:
@@ -23,17 +22,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build and publish Docker images
+  resolve:
+    name: Resolve Mihomo version
     runs-on: ubuntu-latest
-
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          persist-credentials: true
 
-      - name: Resolve Mihomo version
+      - name: Resolve release version
         id: version
         env:
           MANUAL_VERSION: ${{ inputs.version }}
@@ -49,7 +48,7 @@ jobs:
               --retry 3 \
               --retry-delay 2 \
               https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-              | grep -oP '"tag_name":\s*"\K[^"]+')
+              | grep -oP '"tag_name":\\s*"\\K[^"]+')
           fi
 
           if [ -z "$VERSION" ]; then
@@ -61,8 +60,7 @@ jobs:
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if [ "$EVENT_NAME" = "workflow_dispatch" ] || \
-             [ "$VERSION" != "$PREVIOUS" ]; then
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "$VERSION" != "$PREVIOUS" ]; then
             echo "build=true" >> "$GITHUB_OUTPUT"
           else
             echo "build=false" >> "$GITHUB_OUTPUT"
@@ -71,20 +69,47 @@ jobs:
           echo "Current Mihomo release: $VERSION"
           echo "Previous Mihomo release: ${PREVIOUS:-none}"
 
-      - name: Skip unchanged release
-        if: steps.version.outputs.build == 'false'
-        run: echo "No new Mihomo release. Nothing to build."
+  build:
+    name: Build ${{ matrix.variant }}
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: standard
+            tag: latest
+            version_suffix: ""
+            with_gvisor: "0"
+            upx: "0"
+          - variant: gvisor
+            tag: gvisor
+            version_suffix: "-gvisor"
+            with_gvisor: "1"
+            upx: "0"
+          - variant: upx
+            tag: upx
+            version_suffix: "-upx"
+            with_gvisor: "0"
+            upx: "1"
+          - variant: upx-gvisor
+            tag: upx-gvisor
+            version_suffix: "-upx-gvisor"
+            with_gvisor: "1"
+            upx: "1"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up QEMU
-        if: steps.version.outputs.build == 'true'
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
-        if: steps.version.outputs.build == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Login to GHCR
-        if: steps.version.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -92,14 +117,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login to Docker Hub
-        if: steps.version.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and publish
-        if: steps.version.outputs.build == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -110,20 +133,33 @@ jobs:
             linux/arm/v7
             linux/arm/v5
           build-args: |
-            MIHOMO_VERSION=${{ steps.version.outputs.version }}
+            MIHOMO_VERSION=${{ needs.resolve.outputs.version }}
+            WITH_GVISOR=${{ matrix.with_gvisor }}
+            UPX=${{ matrix.upx }}
           push: true
           tags: |
-            ghcr.io/wiktorbgu/mihomo-mikrotik:latest
-            ghcr.io/wiktorbgu/mihomo-mikrotik:${{ steps.version.outputs.version }}
-            docker.io/wiktorbgu/mihomo-mikrotik:latest
-            docker.io/wiktorbgu/mihomo-mikrotik:${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ghcr.io/wiktorbgu/mihomo-mikrotik:${{ matrix.tag }}
+            ghcr.io/wiktorbgu/mihomo-mikrotik:${{ needs.resolve.outputs.version }}${{ matrix.version_suffix }}
+            docker.io/wiktorbgu/mihomo-mikrotik:${{ matrix.tag }}
+            docker.io/wiktorbgu/mihomo-mikrotik:${{ needs.resolve.outputs.version }}${{ matrix.version_suffix }}
+          cache-from: type=gha,scope=mihomo-${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=mihomo-${{ matrix.variant }}
 
-      - name: Save processed release
-        if: success() && steps.version.outputs.build == 'true'
+  save-version:
+    name: Save processed Mihomo version
+    needs: [resolve, build]
+    if: needs.resolve.outputs.build == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Update processed version
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -137,8 +173,7 @@ jobs:
           fi
 
           git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add .github/versions
 

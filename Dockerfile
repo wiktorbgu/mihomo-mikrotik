@@ -1,59 +1,88 @@
-FROM --platform=$BUILDPLATFORM alpine AS build
+
+FROM --platform=$BUILDPLATFORM alpine AS prebuild
+
+WORKDIR /src
+COPY patches/ /tmp/
+
+ARG MIHOMO_VERSION
+
+# инструменты для сборки
+RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make upx
+
+# Используем переданную версию или автоматически определяем последний stable-релиз
+RUN BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
+    if [ -n "$MIHOMO_VERSION" ]; then \
+        TAG="$MIHOMO_VERSION"; \
+    else \
+        JSON="$(curl -fsSL --retry 3 --retry-delay 2 https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)" && \
+        TAG="$(echo "$JSON" | jq -er .tag_name)"; \
+    fi && \
+    test -n "$TAG" && \
+    git clone --depth=1 --branch "$TAG" --single-branch https://github.com/MetaCubeX/mihomo.git /src && \
+    git switch --detach "$TAG" && \
+    echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
+    sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \
+    sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
+
+RUN set -eux; \
+    PATCH=/tmp/mihomo-skip-invalid-proxies.patch; \
+    git apply --check "$PATCH"; \
+    git apply "$PATCH"; \
+    grep -Fq 'skip invalid proxy' adapter/provider/provider.go; \
+    grep -Fq 'usable proxy (skipped' adapter/provider/provider.go; \
+    git diff --check; \
+    echo "Invalid proxy skip patch applied and verified"
+
+RUN set -eux; \
+    PATCH=/tmp/mihomo-happ-v2raytun-subscription-support.patch; \
+    git apply --check "$PATCH"; \
+    git apply "$PATCH"; \
+    grep -Fq 'hpwnrFallback' component/resource/vehicle.go; \
+    grep -Fq 'Fallback(error)' component/resource/fetcher.go; \
+    git diff --check; \
+    echo "HPWNR patch applied and verified"
+
+# origin https://github.com/MetaCubeX/mihomo/pull/3326.patch
+RUN set -eux; \
+    PATCH=/tmp/mihomo-reality-x25519mlkem768-clienthello.patch; \
+    git apply --check "$PATCH"; \
+    git apply "$PATCH"; \
+    grep -Fq 'BuildAddedX25519MLKEM768HandshakeState' component/tls/utls.go; \
+    echo "Reality X25519MLKEM768 patch applied and verified"
+
+RUN set -eu; \
+    sed -i \
+        -e 's/hello\.SessionId\[0\] = 1/hello.SessionId[0] = 26/' \
+        -e 's/hello\.SessionId\[1\] = 8/hello.SessionId[1] = 3/' \
+        -e 's/hello\.SessionId\[2\] = 2/hello.SessionId[2] = 27/' \
+        component/tls/reality.go; \
+    grep -Fq 'hello.SessionId[0] = 26' component/tls/reality.go; \
+    grep -Fq 'hello.SessionId[1] = 3' component/tls/reality.go; \
+    grep -Fq 'hello.SessionId[2] = 27' component/tls/reality.go; \
+    echo "Reality minClientVer patch applied and verified"
+  
+
+FROM --platform=$BUILDPLATFORM prebuild AS build
 ARG TARGETPLATFORM \
     TARGETARCH \
     TARGETOS \
-    TARGETVARIANT \
-    MIHOMO_VERSION \
-    WITH_GVISOR=1
+    TARGETVARIANT
 
-# сборка mihomo с исправлениями загрузки битых ссылок в публичных подписках
+# сборка mihomo с исправлениями
+ARG WITH_GVISOR=0 \
+    UPX=0
 WORKDIR /src
-
-# инструменты для сборки
-RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make
+COPY patches/ /tmp/
 
 ENV GOCACHE=/var/cache/go-build \
     GOTMPDIR=/var/tmp/go-tmp \
     GOFLAGS="-modcacherw"
 RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
-# Переключаемся на нужный тэг
-RUN set -eux; \
-    if [ -z "$MIHOMO_VERSION" ]; then \
-        MIHOMO_VERSION="$(curl -fsSL \
-            --retry 3 \
-            https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
-            | jq -er '.tag_name')"; \
-    fi; \
-    test -n "$MIHOMO_VERSION"; \
-    git clone --depth=1 --branch "$MIHOMO_VERSION" --single-branch https://github.com/MetaCubeX/mihomo.git /src; \
-    BUILDTIME="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"; \
-    echo "Updating version.go with TAG=${MIHOMO_VERSION} and BUILDTIME=${BUILDTIME}"; \
-    sed -i "s|Version\s*=.*|Version = \"${MIHOMO_VERSION}\"|" constant/version.go; \
-    sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
-
-RUN sed -i '/^import (/a\    "github.com/metacubex/mihomo/log"' \
-    adapter/provider/provider.go && \
-    sed -i 's@return nil, fmt.Errorf("proxy %d error: %w", idx, err)@name, _ := mapping["name"].(string)\n                log.Warnln("[Provider %s] skip invalid proxy (idx=%d, name=%q): %v", pdName, idx, name, err)\n                continue@g' \
-    adapter/provider/provider.go
-
-RUN curl -fsSL https://github.com/MetaCubeX/mihomo/pull/3326.patch | git apply && \
-    grep -q 'BuildAddedX25519MLKEM768HandshakeState' component/tls/utls.go || \
-    { echo "patch did not apply: PR #3326" >&2; exit 1; }
-
-RUN sed -i \
-    -e 's/hello\.SessionId\[0\] = 1/hello.SessionId[0] = 26/' \
-    -e 's/hello\.SessionId\[1\] = 8/hello.SessionId[1] = 3/' \
-    -e 's/hello\.SessionId\[2\] = 2/hello.SessionId[2] = 27/' \
-    component/tls/reality.go && \
-    grep -Fq 'hello.SessionId[0] = 26' component/tls/reality.go && \
-    grep -Fq 'hello.SessionId[1] = 3' component/tls/reality.go && \
-    grep -Fq 'hello.SessionId[2] = 27' component/tls/reality.go || \
-    { echo "patch did not apply: reality minClientVer (component/tls/reality.go)" >&2; exit 1; }
-  
 # Сборка mihomo для целевой архитектуры
 RUN echo "Building for $TARGETARCH $TARGETVARIANT" && \
-    BUILD_TAGS="" && [ "$WITH_GVISOR" = "1" ] && BUILD_TAGS="with_gvisor" && \
+    BUILD_TAGS="" && \
+    if [ "$WITH_GVISOR" = "1" ]; then BUILD_TAGS="with_gvisor"; fi && \
     echo "Build tags: $BUILD_TAGS" && \
     if [ "$TARGETARCH" = "arm" ]; then \
         export GOARCH=arm; \
@@ -73,6 +102,38 @@ RUN mkdir -p build/usr/bin build/etc && \
 
 COPY entrypoint.sh build/
 COPY mihomo-fs build/
+
+RUN set -eux; \
+    case "$TARGETARCH-$TARGETVARIANT" in \
+        amd64-*) HPWNR_ASSET="hpwnr-linux-x86_64" ;; \
+        arm64-*) HPWNR_ASSET="hpwnr-linux-arm64" ;; \
+        arm-v7) HPWNR_ASSET="hpwnr-linux-armv7" ;; \
+        arm-v5) HPWNR_ASSET="hpwnr-linux-armv5" ;; \
+        *) HPWNR_ASSET="" ;; \
+    esac; \
+    if [ -n "$HPWNR_ASSET" ]; then \
+        curl -fL --retry 3 "https://github.com/wiktorbgu/hpwnr/releases/latest/download/$HPWNR_ASSET" -o /tmp/build/usr/bin/hpwnr; \
+        chmod 0755 /tmp/build/usr/bin/hpwnr; \
+    fi
+
+# Сжимаем готовые ELF-бинарники UPX, кроме armv5
+RUN set -eux; \
+    UPX_ENABLED="$UPX"; \
+    unset UPX; \
+    if [ "$UPX_ENABLED" = "1" ] && { [ "$TARGETARCH" != "arm" ] || [ "$TARGETVARIANT" != "v5" ]; }; then \
+        for BIN in /tmp/build/usr/bin/mihomo /tmp/build/usr/bin/hpwnr; do \
+            if [ -f "$BIN" ]; then \
+                echo "=== Before UPX: $BIN ==="; \
+                ls -lh "$BIN"; \
+                upx --best --no-lzma "$BIN"; \
+                upx -t "$BIN"; \
+                echo "=== After UPX: $BIN ==="; \
+                ls -lh "$BIN"; \
+            fi; \
+        done; \
+    else \
+        echo "UPX compression disabled (UPX=$UPX_ENABLED)"; \
+    fi
 
 # Базовые образы для каждой архитектуры
 FROM --platform=linux/amd64 wiktorbgu/alpine-mikrotik:ip-nf-tables AS linux-amd64
@@ -122,6 +183,13 @@ ENV DISABLE_NFTABLES=1 \
     DNS_ENHANCED_MODE="fake-ip" \
     DNS_FAKE_IP_RANGE="198.18.0.0/15" \
     DNS_FAKE_IP_TTL=1 \
+    DNS_BOOTSTRAP="system" \
+    DNS="system" \
+    DNS_DEFAULT_NAMESERVER="\$DNS_BOOTSTRAP" \
+    DNS_NAMESERVER="\$DNS" \
+    DNS_PROXY_SERVER_NAMESERVER="\$DNS" \
+    DNS_RESPECT_RULES="true" \
+    DNS_FAKE_IP_FILTER_MODE="blacklist" \
     TCP_CONCURRENT="true" \
     KEEP_ALIVE_IDLE=60 \
     KEEP_ALIVE_INTERVAL=30 \

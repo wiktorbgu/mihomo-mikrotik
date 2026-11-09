@@ -89,6 +89,8 @@ DEFAULT_CONFIG_FILE="/etc/mihomo_preset/template/default_config.yaml"
 TEMPLATE_FILE="$TEMPLATE_DIR/$CONFIG"
 BACKUP_PATH="$TEMPLATE_DIR/default_config_old.yaml"
 
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
+
 # если не указано имя кастомного конфига, испольузем и актуализируем default
 if [ "$CONFIG" = "default_config.yaml" ]; then
   if [ -f "$TEMPLATE_FILE" ]; then
@@ -110,7 +112,7 @@ else
     ENVSUBST=0
   else
     # нет ни шаблона, ни кастомного конфига
-    echo "ERROR: Config not found! Checked: $TEMPLATE_FILE and $WORKDIR/$CONFIG. Check container mounts/volume paths."
+    log "ERROR: Config not found! Checked: $TEMPLATE_FILE and $WORKDIR/$CONFIG. Check container mounts/volume paths."
     exit 1
   fi
 fi    
@@ -129,6 +131,32 @@ if [ ! -f "$HWID_STORE" ]; then
   cat /proc/sys/kernel/random/uuid | tr -d '-' > "$HWID_STORE"
 fi
 HWID="${HWID:-$(cat "$HWID_STORE")}"
+
+format_yaml_list() {
+    local value="$1"
+    # Количество пробелов перед элементом списка, по умолчанию 2
+    local indent="${2:-2}"
+    # Раскрываем переменные внутри значения
+    eval "value=\"$value\""
+
+    printf '%s\n' "$value" |
+        tr '|' '\n' |
+        while IFS= read -r item; do
+            item=$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            [ -n "$item" ] || continue
+            printf '\n%*s- %s' "$indent" '' "$item"
+        done
+}
+
+DNS_NAMESERVER=$(format_yaml_list "${DNS_NAMESERVER:-}" 4)
+DNS_DEFAULT_NAMESERVER=$(format_yaml_list "${DNS_DEFAULT_NAMESERVER:-}" 4)
+DNS_PROXY_SERVER_NAMESERVER=$(format_yaml_list "${DNS_PROXY_SERVER_NAMESERVER:-}" 4)
+DNS_FAKE_IP_FILTER=$(format_yaml_list "${DNS_FAKE_IP_FILTER:-}" 4)
+
+export DNS_NAMESERVER
+export DNS_DEFAULT_NAMESERVER
+export DNS_PROXY_SERVER_NAMESERVER
+export DNS_FAKE_IP_FILTER
 
 yaml_quote() {
   sed 's/\\/\\\\/g; s/"/\\"/g; s/.*/"&"/'
@@ -278,7 +306,7 @@ read_cfg() {
   echo "    allowed-ips: [$allowed_ips_yaml]"
   echo "    udp: true"
   echo "    ip-stack:"
-  echo "      mode: mips"
+  echo "      mode: auto"
   echo "      congestion-controller: bbr3"
   local dns_raw=$(read_cfg "DNS")
   if [ -n "$dns_raw" ] && ! echo "$dns_raw" | grep -q '\$'; then
@@ -518,9 +546,12 @@ if env | grep -qE '^SRV[0-9]'; then
     while IFS='=' read -r name value; do
         case "$name" in
             SRV[0-9]*)
-                # Если SRV содержит http(s)-ссылку, автоматически принимаем её как subscription — так же, как SUB1/SUB2/...
-                case "$value" in
-                    http://*|https://*)
+                # HTTP(S) подписки и deeplink-форматы hpwnr направляем в HTTPVehicle Mihomo
+                # Mihomo сам вызовет hpwnr для happ/v2raytun/incy, а обычные proxy URI
+                # оставляем в локальном file-provider без передачи внешней программе.
+                srv_scheme=$(printf '%s' "$value" | sed 's/:.*//' | tr '[:upper:]' '[:lower:]')
+                case "$srv_scheme" in
+                    http|https|happ|v2raytun|incy)
                         add_provider "$name" "http" "$value"
                         ;;
                     *)
@@ -716,6 +747,8 @@ if grep -Eq '^[[:space:]]*\$TUN_IN_AUTOCONFIG' "$CONFIG_FILE"; then
     - $TUN_INET6_ADDRESS
     dns-hijack:
     - any:53
+    - tcp://any:53
+    udp-timeout: 300
     disable-icmp-forwarding: $TUN_DISABLE_ICMP_FORWARDING
 EOF
 )  
@@ -737,7 +770,7 @@ fi
 # пользовательские sh-скрипты подключаются (source) и выполняются в текущем shell-процессе с общим окружением
 for script in "$USER_SH_DIR"/*.sh; do
   [ -f "$script" ] || continue
-  echo "Running user scripts: $script"
+  log "Running user scripts: $script"
   . "$script"
 done
 
@@ -753,5 +786,5 @@ fi
 
 CMD_MIHOMO="${@:-"-d $WORKDIR -f $WORKDIR/$CONFIG"}"
 # print version mihomo to log
-mihomo -v
+log "$(mihomo -v)"
 exec mihomo $CMD_MIHOMO || exit 1

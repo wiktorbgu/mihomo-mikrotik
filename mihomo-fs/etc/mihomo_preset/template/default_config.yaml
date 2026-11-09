@@ -24,15 +24,20 @@ profile:
 
 dns:
   enable: $DNS_ENABLE
-  use-system-hosts: $DNS_USE_SYSTEM_HOSTS
-  listen: $DNS_LISTEN
   cache-algorithm: $DNS_CACHE_ALGORITHM
   prefer-h3: $DNS_PREFER_H3
+  use-system-hosts: $DNS_USE_SYSTEM_HOSTS
+  respect-rules: $DNS_RESPECT_RULES
+  listen: $DNS_LISTEN
+  ipv6: $IPV6
+  default-nameserver: $DNS_DEFAULT_NAMESERVER
   enhanced-mode: $DNS_ENHANCED_MODE
   fake-ip-range: $DNS_FAKE_IP_RANGE
   fake-ip-ttl: $DNS_FAKE_IP_TTL
-  nameserver:
-  - system
+  fake-ip-filter-mode: $DNS_FAKE_IP_FILTER_MODE
+  fake-ip-filter: $DNS_FAKE_IP_FILTER
+  nameserver: $DNS_NAMESERVER
+  proxy-server-nameserver: $DNS_PROXY_SERVER_NAMESERVER
 
 proxy-providers:
 $PROVIDERS_BLOCK
