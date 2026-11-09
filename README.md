@@ -41,3 +41,42 @@ A high-performance, multi-protocol Mihomo (Clash Meta) proxy client in Docker, o
     <img src="https://img.shields.io/badge/GitHub-Wiki-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub Wiki">
   </a>
 </p>
+
+## 🐳 Варианты сборок Docker
+
+| Сборка | Размер на диске | Docker tag | Описание |
+|:---|---:|:---|:---|
+| 👀 Standard | **64 МБ** | `latest` | Рекомендуется большинству пользователей |
+| 🌚 gVisor | **73,3 МБ** | `gvisor` | Поддержка gVisor |
+| 🔥 UPX | **28,3 МБ** | `upx` | Уменьшенный размер благодаря UPX |
+| 🔥 UPX + gVisor | **29,5 МБ** | `upx-gvisor` | UPX-сжатие и поддержка gVisor |
+
+### Какой вариант выбрать?
+
+- **Standard (`latest`)** — оптимальный выбор для большинства пользователей.
+- **gVisor** — если нужна поддержка gVisor, в частности для исходящего Tailscale.
+- **UPX** — если важно минимизировать занимаемое место.
+- **UPX + gVisor** — если нужны обе возможности одновременно.
+
+> [!NOTE]
+> **ARMv5:** UPX-сжатие не применяется, бинарники остаются без сжатия.
+
+
+## 🐳 Docker Build Variants
+
+| Build | Disk Usage | Docker Tag | Description |
+|:---|---:|:---|:---|
+| 👀 Standard | **64 MB** | `latest` | Recommended for most users |
+| 🌚 gVisor | **73.3 MB** | `gvisor` | gVisor support |
+| 🔥 UPX | **28.3 MB** | `upx` | Reduced size with UPX |
+| 🔥 UPX + gVisor | **29.5 MB** | `upx-gvisor` | UPX compression with gVisor support |
+
+### Which variant should I choose?
+
+- **Standard (`latest`)** — recommended for most users.
+- **gVisor** — if you need gVisor support, especially for outbound Tailscale.
+- **UPX** — if minimizing disk usage is important.
+- **UPX + gVisor** — if you need both features.
+
+> [!NOTE]
+> **ARMv5:** UPX compression is disabled. Binaries remain uncompressed.
