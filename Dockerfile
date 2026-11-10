@@ -1,4 +1,4 @@
-
+# syntax=docker/dockerfile:1
 FROM --platform=$BUILDPLATFORM alpine AS prebuild
 
 WORKDIR /src
@@ -19,7 +19,6 @@ RUN BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
     fi && \
     test -n "$TAG" && \
     git clone --depth=1 --branch "$TAG" --single-branch https://github.com/MetaCubeX/mihomo.git /src && \
-    git switch --detach "$TAG" && \
     echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
     sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \
     sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
@@ -69,18 +68,20 @@ ARG TARGETPLATFORM \
     TARGETVARIANT
 
 # сборка mihomo с исправлениями
-ARG WITH_GVISOR=0 \
-    UPX=0
+ARG WITH_GVISOR=0
+
 WORKDIR /src
-COPY patches/ /tmp/
 
 ENV GOCACHE=/var/cache/go-build \
+    GOMODCACHE=/go/pkg/mod \
     GOTMPDIR=/var/tmp/go-tmp \
     GOFLAGS="-modcacherw"
-RUN mkdir -p /var/cache/go-build /var/tmp/go-tmp
 
 # Сборка mihomo для целевой архитектуры
-RUN echo "Building for $TARGETARCH $TARGETVARIANT" && \
+RUN --mount=type=cache,id=mihomo-go-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=mihomo-go-build,target=/var/cache/go-build \
+    mkdir -p "$GOTMPDIR" && \
+    echo "Building for $TARGETARCH $TARGETVARIANT" && \
     BUILD_TAGS="" && \
     if [ "$WITH_GVISOR" = "1" ]; then BUILD_TAGS="with_gvisor"; fi && \
     echo "Build tags: $BUILD_TAGS" && \
@@ -91,14 +92,13 @@ RUN echo "Building for $TARGETARCH $TARGETVARIANT" && \
     else \
         export GOARCH=$TARGETARCH; \
     fi && \
-    export GOOS=$TARGETOS && CGO_ENABLED=0 go build -tags "$BUILD_TAGS" -trimpath -ldflags "-w -s -buildid=" -o /src/mihomo .
+    export GOOS=$TARGETOS && CGO_ENABLED=0 go build -v -tags "$BUILD_TAGS" -trimpath -ldflags "-w -s -buildid=" -o /src/mihomo .
 
 WORKDIR /tmp
 
 #make work structure
 RUN mkdir -p build/usr/bin build/etc && \
-    mv /src/mihomo build/usr/bin/mihomo && \
-    chmod -R +x .
+    mv /src/mihomo build/usr/bin/mihomo
 
 COPY entrypoint.sh build/
 COPY mihomo-fs build/
@@ -115,6 +115,8 @@ RUN set -eux; \
         curl -fL --retry 3 "https://github.com/wiktorbgu/hpwnr/releases/latest/download/$HPWNR_ASSET" -o /tmp/build/usr/bin/hpwnr; \
         chmod 0755 /tmp/build/usr/bin/hpwnr; \
     fi
+
+ARG UPX=0
 
 # Сжимаем готовые ELF-бинарники UPX, кроме armv5
 RUN set -eux; \
