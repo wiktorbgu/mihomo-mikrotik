@@ -22,7 +22,7 @@ concurrency:
 jobs:
   resolve:
     name: Resolve Mihomo version
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -74,7 +74,7 @@ jobs:
     name: Build ${{ matrix.variant }}
     needs: resolve
     if: needs.resolve.outputs.build == 'true'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -157,7 +157,7 @@ jobs:
     name: Save processed Mihomo version
     needs: [resolve, build]
     if: needs.resolve.outputs.build == 'true' && needs.build.result == 'success'
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
