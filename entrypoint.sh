@@ -136,14 +136,29 @@ format_yaml_list() {
     local value="$1"
     # Количество пробелов перед элементом списка, по умолчанию 2
     local indent="${2:-2}"
-    # Раскрываем переменные внутри значения
-    eval "value=\"$value\""
+    # символ разделителя
+    local separator="${3:-|}"
+    local quote="${4:-0}"
+    local expand="${5:-1}"
+
+    # Раскрываем вложенные ENV-переменные, если разрешено
+    if [ "$expand" = "1" ]; then
+        eval "value=\"$value\""
+    fi
 
     printf '%s\n' "$value" |
-        tr '|' '\n' |
+        tr "$separator" '\n' |
         while IFS= read -r item; do
-            item=$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+            item=$(printf '%s' "$item" |
+                sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
             [ -n "$item" ] || continue
+
+            # При необходимости экранируем и заключаем в YAML-кавычки
+            if [ "$quote" = "1" ]; then
+                item=$(printf '%s' "$item" | yaml_quote)
+            fi
+
             printf '\n%*s- %s' "$indent" '' "$item"
         done
 }
@@ -488,9 +503,9 @@ add_provider() {
     interval: ${provider_interval}
     header:${hwid_header}${custom_headers}"
 
-    [ -n "$filter" ] && sub_params="${sub_params}"$'\n'"    filter: \"${filter}\""
-    [ -n "$exclude_filter" ] && sub_params="${sub_params}"$'\n'"    exclude-filter: \"${exclude_filter}\""
-    [ -n "$exclude_type" ] && sub_params="${sub_params}"$'\n'"    exclude-type: \"${exclude_type}\""
+        [ -n "$filter" ] && sub_params="${sub_params}"$'\n'"    filter: \"${filter}\""
+        [ -n "$exclude_filter" ] && sub_params="${sub_params}"$'\n'"    exclude-filter: \"${exclude_filter}\""
+        [ -n "$exclude_type" ] && sub_params="${sub_params}"$'\n'"    exclude-type: \"${exclude_type}\""
     fi
 
     # индивидуальный override для провайдера
@@ -512,6 +527,19 @@ add_provider() {
                 override="${override}"$'\n'"      ${param}: \"${value}\"" ;;
         esac
     done
+
+    # override-expr (разделитель #, поддержка общего и индивидуального ENV)
+    local override_expr_raw
+    override_expr_raw="$(set_default_var "$name" "PROVIDER_OVERRIDE_EXPR")"
+
+    if [ -n "$override_expr_raw" ]; then
+        local override_expr_yaml
+        override_expr_yaml="$(format_yaml_list "$override_expr_raw" 8 '#' 1 0)"
+
+        if [ -n "$override_expr_yaml" ]; then
+            override="${override}"$'\n'"      override-expr:${override_expr_yaml}"
+        fi
+    fi
 
     [ -n "$override" ] && sub_params="${sub_params}"$'\n'"    override:"$override""
 

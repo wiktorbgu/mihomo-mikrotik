@@ -127,7 +127,7 @@ RUN set -eux; \
             if [ -f "$BIN" ]; then \
                 echo "=== Before UPX: $BIN ==="; \
                 ls -lh "$BIN"; \
-                upx --best --no-lzma "$BIN"; \
+                upx --best --lzma "$BIN"; \
                 upx -t "$BIN"; \
                 echo "=== After UPX: $BIN ==="; \
                 ls -lh "$BIN"; \
