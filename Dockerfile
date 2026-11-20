@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
 FROM --platform=$BUILDPLATFORM alpine AS prebuild
 
+# инструменты для сборки
+RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make upx
+
 WORKDIR /src
 COPY patches/ /tmp/
 
 ARG MIHOMO_VERSION
-
-# инструменты для сборки
-RUN apk add --no-cache git go bash curl jq gzip tar unzip ca-certificates make upx
 
 # Используем переданную версию или автоматически определяем последний stable-релиз
 RUN BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
@@ -22,6 +22,16 @@ RUN BUILDTIME=$(date -u '+%a %b %d %H:%M:%S UTC %Y') && \
     echo "Updating version.go with TAG=${TAG} and BUILDTIME=${BUILDTIME}" && \
     sed -i "s|Version\s*=.*|Version = \"${TAG}\"|" constant/version.go && \
     sed -i "s|BuildTime\s*=.*|BuildTime = \"${BUILDTIME}\"|" constant/version.go
+
+# SRC-IP-CIDR support in dns.fake-ip-filter
+RUN set -eux; \
+    PATCH=/tmp/mihomo-fakeip-src-ip-cidr.patch; \
+    git apply --check "$PATCH"; \
+    git apply "$PATCH"; \
+    grep -Fq 'ShouldSkippedSrc' component/fakeip/skipper.go; \
+    grep -Fq 'C.SrcIPCIDR' config/config.go; \
+    git diff --check; \
+    echo "Fake-IP SRC-IP-CIDR patch applied and verified"
 
 RUN set -eux; \
     PATCH=/tmp/mihomo-skip-invalid-proxies.patch; \
@@ -158,7 +168,7 @@ ENV DISABLE_NFTABLES=1 \
     WORKDIR="/etc/mihomo" \
     HEALTH_CHECK_ENABLE="true" \
     HEALTH_CHECK_URL="https://www.gstatic.com/generate_204" \
-    HEALTH_CHECK_INTERVAL=300 \
+    HEALTH_CHECK_INTERVAL=60 \
     HEALTH_CHECK_TIMEOUT=5000 \
     HEALTH_CHECK_LAZY="true" \
     HEALTH_CHECK_EXPECTED_STATUS=204 \

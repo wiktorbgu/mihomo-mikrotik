@@ -1,0 +1,128 @@
+diff --git a/component/fakeip/skipper.go b/component/fakeip/skipper.go
+index d872fe4..6460025 100644
+--- a/component/fakeip/skipper.go
++++ b/component/fakeip/skipper.go
+@@ -1,6 +1,8 @@
+ package fakeip
+ 
+ import (
++	"net/netip"
++
+ 	C "github.com/metacubex/mihomo/constant"
+ )
+ 
+@@ -17,8 +19,14 @@ type Skipper struct {
+ 
+ // ShouldSkipped return if domain should be skipped
+ func (p *Skipper) ShouldSkipped(domain string) bool {
++	return p.ShouldSkippedSrc(domain, netip.Addr{})
++}
++
++// ShouldSkippedSrc evaluates fake-IP filter rules with the DNS client's source IP.
++// An invalid source address preserves the legacy domain-only matching behavior.
++func (p *Skipper) ShouldSkippedSrc(domain string, src netip.Addr) bool {
+ 	if len(p.Rules) > 0 {
+-		metadata := &C.Metadata{Host: domain}
++		metadata := &C.Metadata{Host: domain, SrcIP: src}
+ 		for _, rule := range p.Rules {
+ 			if matched, action := rule.Match(metadata, C.RuleMatchHelper{}); matched {
+ 				return action == UseRealIP
+diff --git a/config/config.go b/config/config.go
+index cc8c101..6a0cf02 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -1637,7 +1637,7 @@ func parseFakeIPRules(rawRules []string, ruleProviders map[string]P.RuleProvider
+ 				case P.IPCIDR:
+ 					return nil, fmt.Errorf("dns.fake-ip-filter[%d] [%s] error: rule-set behavior is %s, must be domain or classical", idx, line, rp.Behavior())
+ 				case P.Classical:
+-					log.Warnln("%s provider is %s, only matching domain rules in fake-ip-filter", rp.Name(), rp.Behavior())
++					log.Warnln("%s provider is %s; fake-ip-filter can match domain and source-IP rules only when the required metadata is available", rp.Name(), rp.Behavior())
+ 				default:
+ 				}
+ 			}
+@@ -1648,8 +1648,8 @@ func parseFakeIPRules(rawRules []string, ruleProviders map[string]P.RuleProvider
+ 			return nil, fmt.Errorf("dns.fake-ip-filter[%d] [%s] error: %w", idx, line, err)
+ 		}
+ 
+-		if !isDomainRule(parsed.RuleType()) && parsed.RuleType() != C.MATCH {
+-			return nil, fmt.Errorf("dns.fake-ip-filter[%d] [%s] error: rule type '%s' not supported, only domain-based rules allowed", idx, line, tp)
++		if !isDomainRule(parsed.RuleType()) && parsed.RuleType() != C.SrcIPCIDR && parsed.RuleType() != C.MATCH {
++			return nil, fmt.Errorf("dns.fake-ip-filter[%d] [%s] error: rule type '%s' not supported, only domain-based rules and SRC-IP-CIDR are allowed", idx, line, tp)
+ 		}
+ 
+ 		rules = append(rules, parsed)
+diff --git a/context/dns.go b/context/dns.go
+index 1514310..e0543ac 100644
+--- a/context/dns.go
++++ b/context/dns.go
+@@ -2,6 +2,7 @@ package context
+ 
+ import (
+ 	"context"
++	"net/netip"
+ 
+ 	"github.com/metacubex/mihomo/common/utils"
+ 
+@@ -43,3 +44,17 @@ func (c *DNSContext) SetType(tp string) {
+ func (c *DNSContext) Type() string {
+ 	return c.tp
+ }
++
++// dnsSrcAddrKey stores the remote address of a DNS client.
++type dnsSrcAddrKey struct{}
++
++// WithDNSSrcAddr returns a context carrying the DNS client's source address.
++func WithDNSSrcAddr(ctx context.Context, addr netip.Addr) context.Context {
++	return context.WithValue(ctx, dnsSrcAddrKey{}, addr)
++}
++
++// DNSSrcAddrFrom returns the DNS client's source address, if available.
++func DNSSrcAddrFrom(ctx context.Context) netip.Addr {
++	addr, _ := ctx.Value(dnsSrcAddrKey{}).(netip.Addr)
++	return addr
++}
+diff --git a/dns/middleware.go b/dns/middleware.go
+index fa6cb68..c13d34e 100644
+--- a/dns/middleware.go
++++ b/dns/middleware.go
+@@ -152,7 +152,7 @@ func withFakeIP(skipper *fakeip.Skipper, fakePool *fakeip.Pool, fakePool6 *fakei
+ 			q := r.Question[0]
+ 
+ 			host := strings.TrimRight(q.Name, ".")
+-			if skipper.ShouldSkipped(host) {
++			if skipper.ShouldSkippedSrc(host, icontext.DNSSrcAddrFrom(ctx)) {
+ 				return next(ctx, r)
+ 			}
+ 
+diff --git a/dns/server.go b/dns/server.go
+index d476c29..8af0c65 100644
+--- a/dns/server.go
++++ b/dns/server.go
+@@ -3,10 +3,12 @@ package dns
+ import (
+ 	"context"
+ 	"net"
++	"net/netip"
+ 
+ 	"github.com/metacubex/mihomo/common/sockopt"
+ 	"github.com/metacubex/mihomo/component/resolver"
+ 	C "github.com/metacubex/mihomo/constant"
++	icontext "github.com/metacubex/mihomo/context"
+ 	"github.com/metacubex/mihomo/log"
+ 
+ 	D "github.com/miekg/dns"
+@@ -32,7 +34,13 @@ type serverHandler struct {
+ 
+ // ServeDNS implement D.Handler ServeDNS
+ func (s serverHandler) ServeDNS(w D.ResponseWriter, r *D.Msg) {
+-	msg, err := s.service.ServeMsg(context.Background(), r)
++	ctx := context.Background()
++	if w != nil && w.RemoteAddr() != nil {
++		if addr, err := netip.ParseAddrPort(w.RemoteAddr().String()); err == nil {
++			ctx = icontext.WithDNSSrcAddr(ctx, addr.Addr().Unmap())
++		}
++	}
++	msg, err := s.service.ServeMsg(ctx, r)
+ 	if err != nil {
+ 		m := new(D.Msg)
+ 		m.SetRcode(r, D.RcodeServerFailure)
